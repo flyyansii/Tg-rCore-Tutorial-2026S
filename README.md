@@ -1,7 +1,7 @@
 # TanGram-rCore-Tutorial
 
-面向操作系统课程教学与自学的组件化 Tangram rCore Tutorial 操作系统内核实验仓库。  
-仓库同时包含：
+面向操作系统课程教学与自学的组件化 Tangram rCore Tutorial 操作系统内核实验的汇总仓库。  
+汇总仓库包含：
 
 - `tg-rcore-tutorial-ch1~tg-rcore-tutorial-ch8`：tg-rcore-tutorial-ch[1-8] 8 个渐进章节（每章是一个可独立运行的内核 crate + 指导文档）
 - `tg-*`：可复用内核组件 crate（内存、虚存、上下文、同步、信号、文件系统等）
@@ -9,7 +9,8 @@
 - `tg-rcore-tutorial-checker`：测试输出检测工具
 - `tg-rcore-tutorial-linker`：为 ch1~ch8的rCore Tutorial教学操作系统内核提供链接脚本生成功能
 
-目标是让你既能按章节学习内核演进，也能按组件视角开发和复用内核模块。
+本实验教程的目标是让你既能按章节学习内核演进，也能按组件视角开发和复用内核模块。
+请看`rcore-tutorial-ch[1-8]`中的`README.md`中的`## 练习任务`小节的内容，来了解并完成具体的任务要求。
 
 ## 1. 先看这段：如何开始
 
