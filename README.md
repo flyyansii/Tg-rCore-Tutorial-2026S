@@ -1,6 +1,13 @@
 # TanGram-rCore-Tutorial
 
-面向操作系统课程教学与自学的组件化 Tangram rCore Tutorial 操作系统内核实验的汇总仓库。  
+## 0. 简介
+面向操作系统课程教学与自学的组件化 Tangram rCore Tutorial 操作系统内核实验教程的汇总仓库。
+
+本实验教程的目标：学生与AI充分合作，按章节学习操作系统内核的逐步演进过程，或按组件视角学习操作系统内核的总体架构和功能组成，从而能够把操作系统的原理概率与设计实现关联起来，并掌握操作系统的系统架构级设计能力。  
+
+本实验教程的任务：请看`rcore-tutorial-ch[1-8]`中的`README.md`中的`## 练习任务`小节的内容，了解并完成基础级和扩展级的任务要求。对于能力强的同学，请看`docs\challenges.md`的内容，了解并完成挑战级的任务要求。
+
+
 汇总仓库包含：
 
 - `tg-rcore-tutorial-ch1~tg-rcore-tutorial-ch8`：tg-rcore-tutorial-ch[1-8] 8 个渐进章节（每章是一个可独立运行的内核 crate + 指导文档）
@@ -9,10 +16,7 @@
 - `tg-rcore-tutorial-checker`：测试输出检测工具
 - `tg-rcore-tutorial-linker`：为 ch1~ch8的rCore Tutorial教学操作系统内核提供链接脚本生成功能
 
-本实验教程的目标是让你既能按章节学习内核演进，也能按组件视角开发和复用内核模块。
-请看`rcore-tutorial-ch[1-8]`中的`README.md`中的`## 练习任务`小节的内容，来了解并完成具体的任务要求。
-
-## 1. 先看这段：如何开始
+## 1. 如何开始
 
 ### 1.0 基于Web IDE方式的快速试用
 不需要配置开发运行环境，只需有一个能上网的浏览器即可。

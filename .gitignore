@@ -24,5 +24,7 @@ Cargo.lock
 *.tmp
 *.log
 
+# compressed file for submodules 
+bundle/submodules.tar.gz
 # Extracted workspace (optional - uncomment if you want to ignore extracted content)
 # workspace-full/
