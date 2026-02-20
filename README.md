@@ -16,7 +16,7 @@
 ### 1.0 基于Web IDE方式的快速试用
 不需要配置开发运行环境，只需有一个能上网的浏览器即可。
  - [教程国内网址](https://cnb.cool/LearningOS/tg-rcore-tutorial/-/tree/test) 
-   - 阅读[[豆包提供的基于 cnb 的Web IDE 实践 tg-rcore-tutorial 简易指导书]](https://www.doubao.com/thread/w236fa7686eb1d316)并按其提示操作
+   - 阅读[豆包提供的基于 cnb 的Web IDE 实践 tg-rcore-tutorial 简易指导书](https://www.doubao.com/thread/w236fa7686eb1d316)并按其提示操作
  - [教程国外网址](https://github.com/LearningOS/tg-rcore-tutorial/tree/test)
    - 阅读[豆包提供的基于 github 的codespaces Web IDE 实践 tg-rcore-tutorial 简易指导书](https://www.doubao.com/thread/w8fbf39ac661d8907)并按其提示操作
 
@@ -32,9 +32,20 @@
 
 #### 方式 A：直接获取完整实验仓库（推荐）
 ```bash
+git clone --recurse-submodules  https://github.com/rcore-os/tg-rcore-tutorial.git
+cd tg-rcore-tutorial
+# 缺省在test分支，可通过下面的命令确保在test分支
+git checkout test #切换到test分支
+```
+补充：没有采用"--recurse-submodules" 进行`git clone` 后，拉取各个submodule的步骤
+```bash
 git clone https://github.com/rcore-os/tg-rcore-tutorial.git
 cd tg-rcore-tutorial
+# 缺省在test分支，可通过下面的命令确保在test分支
 git checkout test #切换到test分支
+# 初始化并拉取所有子模块代码
+git submodule init   # 初始化.gitmodules配置
+git submodule update # 拉取子模块的指定版本代码
 ```
 
 #### 获取某个操作系统内核或内核功能组件（单独 crate）
