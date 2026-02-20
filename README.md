@@ -53,6 +53,24 @@ git submodule init   # 初始化.gitmodules配置
 git submodule update # 拉取子模块的指定版本代码
 ```
 
+方式 B：通过 crates.io 集合包获取（内嵌压缩包）
+先安装 cargo-clone
+
+```bash
+cargo install cargo-clone
+```
+
+再拉取集合包并解包完整工作区：
+
+```bash
+cargo clone tg-rcore-tutorial # 也可带具体版本号 @0.4.5-preview.2
+cd tg-rcore-tutorial
+bash scripts/extract_submodules.sh
+cd workspace-full/tg-rcore-tutorial
+```
+
+解包后将得到完整教学目录（包含 ch1~ch8、tg-*、tg-user、tg-checker）。
+
 #### 获取某个操作系统内核或内核功能组件（单独 crate）
 ```bash
 cargo clone tg-rcore-tutorial-ch3  #tg-rcore-tutorial-chX 是发布到 crates.io上的组件化内核， X=1..8 代表8个内核 
