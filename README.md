@@ -7,7 +7,6 @@
 
 本实验教程的任务：请看`rcore-tutorial-ch[1-8]`中的`README.md`中的`## 练习任务`小节的内容，了解并完成基础级和扩展级的任务要求。对于能力强的同学，请看`docs\challenges.md`的内容，了解并完成挑战级的任务要求。
 
-
 汇总仓库包含：
 
 - `tg-rcore-tutorial-ch1~tg-rcore-tutorial-ch8`：tg-rcore-tutorial-ch[1-8] 8 个渐进章节（每章是一个可独立运行的内核 crate + 指导文档）
@@ -15,6 +14,36 @@
 - `tg-rcore-tutorial-user`：用户态测试程序集合
 - `tg-rcore-tutorial-checker`：测试输出检测工具
 - `tg-rcore-tutorial-linker`：为 ch1~ch8的rCore Tutorial教学操作系统内核提供链接脚本生成功能
+
+### 任务
+#### 基础实验
+充分利用各类AI工具，完成附录“最新教学实验教程”中所列的5个基础实验练习（位于 tg-rcore-tutorial-ch{3/4/5/6/8}），夯实操作系统理论基础并提升实践能力，最终提交一份包含与AI合作的实现过程与学习收获的总结报告。  
+- 与AI合作的实现过程（包括如何与AI交互，碰到的问题/bug、解决过程等）
+- 学习效果评估（包括自己在这个学习过程中知识和能力的提升/下降评价，与本校现有教学实验教程的定量/定性的对比分析）
+
+#### 改进教程
+充分利用各类AI工具，基于本教学实验教程--`tg-rcore-tutorial`，结合自身兴趣与学习需求，进行改进、扩展、裁剪、重构，或者自己从零构建，形成自己的个性化教学实验教程。需提交一份设计总结报告，内容包括：  
+   - 设计思路与目标（包括适合自己的学习方式描述，初步设想和规划等）
+   - 与AI合作的实现过程（包括如何与AI交互，碰到的问题/bug、解决过程等）
+   - 学习效果评估（包括自己在这个学习过程中知识和能力的提升/下降评价，与本校现有教学实验教程的定量/定性的对比分析）
+
+#### 扩展实验
+充分利用各类AI工具，设计实现`tg-rcore-tutorial-ch{1~8}`的游戏应用，并进一步扩展`tg-rcore-tutorial-ch{1~8}`内核，实现支持这些游戏应用的新内核，夯实操作系统理论基础并提升实践能力和创造能力，最终提交一份包含与AI合作的实现过程与学习收获的总结报告，内容包括：    
+   - 与AI合作的实现过程（包括如何与AI交互，碰到的问题/bug、解决过程等）
+   - 学习效果评估（包括自己在这个学习过程中知识和能力的提升/下降评价，与本校现有教学实验教程的定量/定性的对比分析）
+
+**游戏应用和支持游戏的内核**简要描述（注：下面的`ch`是`tg-rcore-tutorial-ch`的简写）
+
+- `ch1-tangram`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch1-tangram.png)，在ch1基础上扩展内核功能，静态显示七巧板“OS”图案，即基于 VirtIO-GPU 驱动操作 Framebuffer，将OS的代码中数组定义的七巧板“OS”图案像素数据直接渲染到帧缓冲，实现静态图片显示。
+- `ch2-moving-tangram`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch2-moving-tangram.gif)，在ch2基础上扩展内核功能，动态分步显示七巧板“OS”图案，即通过多程序批处理方式，每个程序渲染一块，逐块渲染七巧板“OS”的 n 个组成部分，实现动态拼接的视觉效果。
+- `ch3-snake`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch3-snake.gif)，实现用户态贪吃蛇游戏，支持**轮询式输入**和**中断式输入**两种控制方式；在ch3基础上扩展内核功能，支持运行用户态贪吃蛇游戏。
+- `ch4-tetris`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch4-tetris.gif)，实现用户态单人俄罗斯方块游戏，支持方块旋转、行消除、计分、速度递增，无额外依赖；在ch4基础上扩展内核功能，支持运行用户态单人俄罗斯方块游戏。
+- `ch5-pingpong`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch5-pingpong.gif)，实现多进程协作的用户态双人乒乓游戏，支持键盘控制、碰撞反弹、计分，学习 2D 碰撞与帧刷新；在ch5基础上扩展内核功能，支持运行多进程协作的用户态双人乒乓游戏。
+- `ch6-breakout`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch6-breakout.gif)，实现用户态打砖块游戏，支持碰撞反弹、计分，及通过快捷键保存/恢复游戏进度；在ch6基础上扩展内核功能，支持运行用户态打砖块游戏。
+- `ch7-pacman`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch7-pacman.gif)，实现简化版用户态吃豆人游戏，还原经典玩法核心；在ch7基础上扩展内核功能，支持运行简化版用户态吃豆人游戏。
+- `ch8-doom`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch8-doom.gif)，移植[用户态跨平台版 Doom 游戏](https://github.com/ozkl/doomgeneric)，通过 Framebuffer 实现 3D 软件渲染；在ch8基础上扩展内核功能，支持运行用户态跨平台版 Doom 游戏。
+
+
 
 ## 1. 如何开始
 
