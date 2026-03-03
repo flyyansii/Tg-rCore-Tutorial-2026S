@@ -1,5 +1,7 @@
 # TanGram-rCore-Tutorial
 
+[![Crates.io](https://img.shields.io/crates/v/tg-rcore-tutorial.svg)](https://crates.io/crates/tg-rcore-tutorial) [![Docs.rs](https://docs.rs/tg-rcore-tutorial/badge.svg)](https://docs.rs/tg-rcore-tutorial) [![License](https://img.shields.io/crates/l/tg-rcore-tutorial.svg)](LICENSE)
+
 ## 0. 简介
 面向操作系统课程教学与自学的组件化 Tangram rCore Tutorial 操作系统内核实验教程的汇总仓库。
 
