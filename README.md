@@ -15,9 +15,11 @@
 - `tg-rcore-tutorial-checker`：测试输出检测工具
 - `tg-rcore-tutorial-linker`：为 ch1~ch8的rCore Tutorial教学操作系统内核提供链接脚本生成功能
 
-### 任务
+**本实验教程是[AI4OSE（AI for Operating System Engineering）的Lab1](https://crates.io/crates/ai4ose-lab1-2026s)。**
+
+### 练习任务
 #### 基础实验
-充分利用各类AI工具，完成附录“最新教学实验教程”中所列的5个基础实验练习（位于 tg-rcore-tutorial-ch{3/4/5/6/8}），夯实操作系统理论基础并提升实践能力，最终提交一份包含与AI合作的实现过程与学习收获的总结报告。  
+充分利用各类AI工具，完成位于 `tg-rcore-tutorial-ch{3/4/5/6/8}` 下所列的5个基础实验练习，夯实操作系统理论基础并提升实践能力，最终提交一份包含与AI合作的实现过程与学习收获的总结报告。  
 - 与AI合作的实现过程（包括如何与AI交互，碰到的问题/bug、解决过程等）
 - 学习效果评估（包括自己在这个学习过程中知识和能力的提升/下降评价，与本校现有教学实验教程的定量/定性的对比分析）
 
@@ -32,7 +34,7 @@
    - 与AI合作的实现过程（包括如何与AI交互，碰到的问题/bug、解决过程等）
    - 学习效果评估（包括自己在这个学习过程中知识和能力的提升/下降评价，与本校现有教学实验教程的定量/定性的对比分析）
 
-**游戏应用和支持游戏的内核**简要描述（注：下面的`ch`是`tg-rcore-tutorial-ch`的简写）
+**游戏应用和支持游戏的内核**简要描述如下（注：下面的`ch`是`tg-rcore-tutorial-ch`的简写）
 
 - `ch1-tangram`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch1-tangram.png)，在ch1基础上扩展内核功能，静态显示七巧板“OS”图案，即基于 VirtIO-GPU 驱动操作 Framebuffer，将OS的代码中数组定义的七巧板“OS”图案像素数据直接渲染到帧缓冲，实现静态图片显示。
 - `ch2-moving-tangram`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch2-moving-tangram.gif)，在ch2基础上扩展内核功能，动态分步显示七巧板“OS”图案，即通过多程序批处理方式，每个程序渲染一块，逐块渲染七巧板“OS”的 n 个组成部分，实现动态拼接的视觉效果。
@@ -43,7 +45,7 @@
 - `ch7-pacman`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch7-pacman.gif)，实现简化版用户态吃豆人游戏，还原经典玩法核心；在ch7基础上扩展内核功能，支持运行简化版用户态吃豆人游戏。
 - `ch8-doom`：[demo](https://github.com/rcore-os/tg-rcore-tutorial-game-demo/blob/main/ch8-doom.gif)，移植[用户态跨平台版 Doom 游戏](https://github.com/ozkl/doomgeneric)，通过 Framebuffer 实现 3D 软件渲染；在ch8基础上扩展内核功能，支持运行用户态跨平台版 Doom 游戏。
 
-
+**完成后，并请与我们联系，分享你的实现过程与学习收获。想接受进一步的挑战，可访问[AI4OSE（AI for Operating System Engineering）的Lab2](https://crates.io/crates/ai4ose-lab2-2026s)。**
 
 ## 1. 如何开始
 
@@ -151,6 +153,28 @@ cargo build --features exercise
 | `tg-rcore-tutorial-signal-impl` | 信号处理具体实现 | 直接复用信号实现 |
 | `tg-rcore-tutorial-user` | 用户程序与测试用例 | 内核构建期打包/拉取用户态测例 |
 | `tg-rcore-tutorial-checker` | 输出匹配检测工具 | 自动判定章节测试是否通过 |
+
+一共 23 个 crates ，分为 4 层：
+
+### Layer 0: 基础组件 (10个，无内部依赖)
+- sbi , linker , console , kernel-context , kernel-alloc , kernel-vm , easy-fs , signal-defs , task-manage , checker
+### Layer 1: 中间组件 (3个)
+- syscall → 依赖 signal-defs
+- signal → 依赖 kernel-context , signal-defs
+- sync → 依赖 task-manage
+### Layer 2: 上层组件 (2个)
+- signal-impl → 依赖 kernel-context , signal
+- user → 依赖 console , syscall
+### Layer 3: 内核章节 (8个)
+- ch1 → 仅依赖 sbi
+- ch2 , ch3 → 依赖 5 个基础组件
+- ch4 → 依赖 7 个组件（增加内存管理）
+- ch5 → 依赖 8 个组件（增加进程管理）
+- ch6 → 依赖 9 个组件（增加文件系统）
+- ch7 → 依赖 11 个组件（增加信号处理）
+- ch8 → 依赖 12 个组件（增加同步原语）
+
+可进一步查看更详细的[**mermaid格式crates依赖关系分析图**](./deps-mermaid.md)和[**ascii格式crates依赖关系分析图**](./deps-ascii.md)
 
 ## 3. 章节与练习地图
 
