@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:rcore-os/tg-rcore-tutorial-syscall.git
 	branch = test
-	commit = 6261dbf45e0e6222c4d09d95c598eab75157dac9
-	parent = e675dd51e56a3ab6ce49a53c9b873f7d1ec73a55
+	commit = 35fad6d0854df93fd3a423f8c63067807d963788
+	parent = 592a17104a76d67ef346330ca27bf6278b87ecdb
 	method = merge
 	cmdver = 0.4.9
