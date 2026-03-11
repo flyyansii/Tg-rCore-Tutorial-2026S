@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:rcore-os/tg-rcore-tutorial-linker.git
 	branch = test
-	commit = cf15009aa1b06963c0f8cd56ec1e6ddd558e1789
-	parent = 8c736ec9acebd95afd21b158ed1735d77579b066
+	commit = aac943ba1770dc5b304872c3033fd0babe21cf52
+	parent = 9db7e99a1d48c9924d420c53ae22f41a7238424f
 	method = merge
 	cmdver = 0.4.9
