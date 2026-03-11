@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:rcore-os/tg-rcore-tutorial-sbi.git
 	branch = test
-	commit = 33be7ae526439dbbee159b2e40432d716fcb5c2e
-	parent = a4ac8cd2b7cf631dddee4e7deb2896c8f6b9e267
+	commit = f40c6722899c7a9085a895ec23fc7b385d01cc7d
+	parent = fa4f6531f9df06fd280788df3362c0e7ad256624
 	method = merge
 	cmdver = 0.4.9
