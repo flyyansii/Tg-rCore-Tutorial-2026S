@@ -70,23 +70,10 @@
 
 #### 方式 A：直接获取完整实验仓库（推荐）
 ```bash
-git clone --recurse-submodules  https://github.com/rcore-os/tg-rcore-tutorial.git  #注：由于cnb.cool不支持git协议的clone，所以在cnb.cool开发环境中不宜采用这种方式
+git clone https://github.com/rcore-os/tg-rcore-tutorial.git  #注：由于cnb.cool不支持git协议的clone，所以在cnb.cool开发环境中不宜采用这种方式
 cd tg-rcore-tutorial
 # 缺省在test分支，可通过下面的命令确保在test分支
 git checkout test #切换到test分支
-```
-补充：没有采用"--recurse-submodules" 进行`git clone` 后，拉取各个submodule的步骤（适合cnb.cool开发环境）
-```bash
-git clone https://github.com/rcore-os/tg-rcore-tutorial.git
-cd tg-rcore-tutorial
-# 缺省在test分支，可通过下面的命令确保在test分支
-git checkout test #切换到test分支
-# 初始化并拉取所有子模块代码
-#注：在cnb.cool开发环境中，由于git协议不支持submodule，所以需要切换到https协议，需要执行如下命令
-./scripts/switch-submodule-protocol.sh https
-#注：如果开发环境支持git协议，则不需要切换到https协议，即不需要执行上面这条命令
-git submodule init   # 初始化.gitmodules配置
-git submodule update # 拉取子模块的指定版本代码
 ```
 
 方式 B：通过 crates.io 集合包获取（内嵌压缩包）
@@ -101,13 +88,12 @@ cargo install cargo-clone
 ```bash
 cargo clone tg-rcore-tutorial # 也可带具体版本号 @0.4.5-preview.2
 cd tg-rcore-tutorial
-bash scripts/extract_submodules.sh
-cd workspace-full/tg-rcore-tutorial
+bash scripts/extract_submodules.sh #解开 bundle/submodules.tar.gz，在当前目录下形成23个crates
 ```
 
 解包后将得到完整教学目录（包含 ch1~ch8、tg-*、tg-user、tg-checker）。
 
-#### 获取某个操作系统内核或内核功能组件（单独 crate）
+#### 获取单个操作系统内核或内核功能组件（单独 crate）
 ```bash
 cargo clone tg-rcore-tutorial-ch3  #tg-rcore-tutorial-chX 是发布到 crates.io上的组件化内核， X=1..8 代表8个内核 
 cd tg-rcore-tutorial-ch3  # 进入 tg-rcore-tutorial-ch3 内核
