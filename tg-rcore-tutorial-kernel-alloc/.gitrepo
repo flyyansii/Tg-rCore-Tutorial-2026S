@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:rcore-os/tg-rcore-tutorial-kernel-alloc.git
 	branch = test
-	commit = f9ec2764596ed6ea70a5d99a09aa8618aba2aabe
-	parent = 1efaeca448f7ac0ce22e1df68ac86e3056e63a2e
+	commit = 94e877f0fa5da6c0596b30dec1d3067423b0fdf8
+	parent = c5def745101db4967ab686cf336bc12e20ed223a
 	method = merge
 	cmdver = 0.4.9
