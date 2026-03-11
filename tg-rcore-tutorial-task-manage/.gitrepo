@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:rcore-os/tg-rcore-tutorial-task-manage.git
 	branch = test
-	commit = a34177c864f0bfaad5906ef7d47ce6865370f38e
-	parent = 9a48d24ba6c4be198aab2775672e88b7fe249e78
+	commit = 3957023363ea418a35a170f58486d36283438c61
+	parent = efd0d255b6a50aa384df9e0f207176a4afcd5045
 	method = merge
 	cmdver = 0.4.9
