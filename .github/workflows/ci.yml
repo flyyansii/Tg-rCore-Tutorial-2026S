@@ -50,7 +50,7 @@ jobs:
           key: ${{ runner.os }}-ch2-cargo-${{ hashFiles('tg-rcore-tutorial-ch2/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-ch2-cargo-
       - name: Run ch2 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   test-ch3:
     name: Test Chapter 3
@@ -71,7 +71,7 @@ jobs:
           key: ${{ runner.os }}-ch3-cargo-${{ hashFiles('tg-rcore-tutorial-ch3/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ch3-cargo-
       - name: Run ch3 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   test-ch4:
     name: Test Chapter 4
@@ -92,7 +92,7 @@ jobs:
           key: ${{ runner.os }}-ch4-cargo-${{ hashFiles('tg-rcore-tutorial-ch4/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-ch4-cargo-
       - name: Run ch4 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   test-ch5:
     name: Test Chapter 5
@@ -113,7 +113,7 @@ jobs:
           key: ${{ runner.os }}-ch5-cargo-${{ hashFiles('tg-rcore-tutorial-ch5/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-ch5-cargo-
       - name: Run ch5 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   test-ch6:
     name: Test Chapter 6
@@ -134,7 +134,7 @@ jobs:
           key: ${{ runner.os }}-ch6-cargo-${{ hashFiles('tg-rcore-tutorial-ch6/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-ch6-cargo-
       - name: Run ch6 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   test-ch7:
     name: Test Chapter 7
@@ -155,7 +155,7 @@ jobs:
           key: ${{ runner.os }}-ch7-cargo-${{ hashFiles('tg-rcore-tutorial-ch7/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-ch7-cargo-
       - name: Run ch7 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   test-ch8:
     name: Test Chapter 8
@@ -176,7 +176,7 @@ jobs:
           key: ${{ runner.os }}-ch8-cargo-${{ hashFiles('tg-rcore-tutorial-ch8/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-ch8-cargo-
       - name: Run ch8 tests
-        run: bash test.sh
+        run: bash test.sh base
 
   all-passed:
     name: All Chapters Passed
