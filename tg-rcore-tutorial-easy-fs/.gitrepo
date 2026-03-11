@@ -6,7 +6,7 @@
 [subrepo]
 	remote = git@github.com:rcore-os/tg-rcore-tutorial-easy-fs.git
 	branch = test
-	commit = fea6736c34dd377f7cb30b66f5b3a629745e660c
-	parent = e37788ea09002cacc484bcee65fc8fbffa847ec8
+	commit = 158ae69858941d0377665666b84b1d488a63f98c
+	parent = 1847de83ca232952e38b267e197013ba07974d01
 	method = merge
 	cmdver = 0.4.9
