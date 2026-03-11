@@ -151,6 +151,9 @@ fi
 
 declare -a TEST_CRATES
 for crate in "${ALL_CRATE_NAMES[@]}"; do
+    # 跳过自身，只测试依赖此组件的章节 (ch1~ch8)
+    [[ "$crate" == "tg-rcore-tutorial-sbi" ]] && continue
+    
     if [[ -n "${CRATE_USE_LOCAL[$crate]+x}" ]]; then
         TEST_CRATES+=("$crate")
     fi
@@ -210,11 +213,11 @@ for CRATE in "${TEST_CRATES[@]}"; do
         LOCAL_SRC_PATH="${LOCAL_DEP_PATHS[$CRATE]:-}"
         
         if [[ -z "$LOCAL_SRC_PATH" ]]; then
-            echo -e "  ${RED}[错误]${NC} 本地源码路径 ${CRATE} 未在 sysdeps.txt 中定义"
-            exit 1
+            # 默认回退：在 SCRIPT_DIR 的兄弟目录中查找同名 crate
+            ABS_LOCAL_SRC="${SCRIPT_DIR}/../${CRATE}"
+        else
+            ABS_LOCAL_SRC="${SCRIPT_DIR}/${LOCAL_SRC_PATH}"
         fi
-        
-        ABS_LOCAL_SRC="${SCRIPT_DIR}/${LOCAL_SRC_PATH}"
         
         if [[ ! -d "${ABS_LOCAL_SRC}" ]]; then
             echo -e "  ${RED}[错误]${NC} 本地源码目录不存在: ${ABS_LOCAL_SRC}"
@@ -232,33 +235,36 @@ for CRATE in "${TEST_CRATES[@]}"; do
 done
 echo ""
 
-declare -a LOCAL_MODE_CRATES
-for crate in "${TEST_CRATES[@]}"; do
-    if [[ "${CRATE_USE_LOCAL[$crate]}" == "true" ]]; then
-        LOCAL_MODE_CRATES+=("$crate")
-    fi
-done
-
-if [[ ${#LOCAL_MODE_CRATES[@]} -gt 0 && ${#LOCAL_DEP_PATHS[@]} -gt 0 ]]; then
+if [[ ${#LOCAL_DEP_PATHS[@]} -gt 0 ]]; then
     echo "========================================"
-    echo "阶段2：patch Cargo.toml 使用本地依赖"
+    echo "阶段2：patch Cargo.toml 使用本地依赖路径"
     echo "========================================"
 
-    DEP_LIST="["
-    first=true
-    for dep_name in "${!LOCAL_DEP_PATHS[@]}"; do
-        if [[ "$first" != "true" ]]; then DEP_LIST+=","; fi
-        DEP_LIST+="('${dep_name}', '${LOCAL_DEP_PATHS[$dep_name]}')"
-        first=false
-    done
-    DEP_LIST+="]"
-
-    for CRATE in "${LOCAL_MODE_CRATES[@]}"; do
+    for CRATE in "${TEST_CRATES[@]}"; do
         TARGET_DIR="${SYSTEST_DIR}/${CRATE}"
         CARGO_TOML="${TARGET_DIR}/Cargo.toml"
 
         if [[ ! -f "${CARGO_TOML}" ]]; then
             echo "  [警告] ${CRATE}/Cargo.toml 不存在，跳过"
+            continue
+        fi
+
+        # 针对每个 crate，只将实际存在的本地依赖路径加入 DEP_LIST
+        DEP_LIST="["
+        first=true
+        for dep_name in "${!LOCAL_DEP_PATHS[@]}"; do
+            rel_path="${LOCAL_DEP_PATHS[$dep_name]}"
+            # 判断该路径从 TARGET_DIR 出发是否真实存在
+            if [[ -d "${TARGET_DIR}/${rel_path}" ]]; then
+                if [[ "$first" != "true" ]]; then DEP_LIST+=","; fi
+                DEP_LIST+="('${dep_name}', '${rel_path}')"
+                first=false
+            fi
+        done
+        DEP_LIST+="]"
+
+        if [[ "$DEP_LIST" == "[]" ]]; then
+            echo "  [跳过] ${CRATE}/Cargo.toml 无有效本地依赖路径（路径不存在）"
             continue
         fi
 
@@ -274,46 +280,46 @@ dep_list = ${DEP_LIST}
 with open(cargo_toml, 'r') as f:
     content = f.read()
 
-for pkg_name, rel_path in dep_list:
-    content = re.sub(
-        r'^(' + re.escape(pkg_name) + r'\s*=\s*)"[^"]*"',
-        r'\1{ path = "' + rel_path + r'" }',
-        content, flags=re.MULTILINE
-    )
+# 删除已有的 [patch.*] 节，避免重复
+content = re.sub(r'\n\[patch\.[^\]]*\][^\[]*', '', content, flags=re.DOTALL)
+content = content.rstrip('\n') + '\n'
 
-    def make_replace_table(path):
-        def replace_table(m):
-            prefix = m.group(1)
-            inner  = m.group(2)
-            inner  = re.sub(r'\bversion\s*=\s*"[^"]*",?\s*', '', inner)
-            inner  = inner.strip().rstrip(',').strip()
-            body   = ('path = "' + path + '", ' + inner) if inner else ('path = "' + path + '"')
-            return prefix + '{ ' + body + ' }'
-        return replace_table
+# 直接修改依赖节中对应包的 path 字段：
+#   - 若依赖行已有 path="..."，则替换为新路径
+#   - 若没有 path 字段（crates.io 版本），则在行尾 } 前插入 path
+# 同时处理 [dependencies] 和 [build-dependencies]，确保本地拷贝和
+# cargo clone 两种情况都能正确修补路径。
+DEP_SECTIONS = {'dependencies', 'build-dependencies', 'dev-dependencies'}
+lines = content.split('\n')
+new_lines = []
+in_dep_section = False
+section_pat = re.compile(r'^\s*\[([^\]]+)\]')
+patched_pkgs = []
 
-    content = re.sub(
-        r'^(' + re.escape(pkg_name) + r'\s*=\s*)\{([^}]*)\}',
-        make_replace_table(rel_path), content, flags=re.MULTILINE
-    )
+for line in lines:
+    m = section_pat.match(line)
+    if m:
+        section = m.group(1).strip()
+        in_dep_section = (section in DEP_SECTIONS)
+    if in_dep_section:
+        for pkg_name, rel_path in dep_list:
+            if pkg_name in line:
+                if re.search(r'\bpath\s*=\s*"[^"]*"', line):
+                    line = re.sub(r'path\s*=\s*"[^"]*"', 'path = "' + rel_path + '"', line)
+                else:
+                    line = re.sub(r'(\s*\}\s*)$', ', path = "' + rel_path + '" }', line)
+                patched_pkgs.append(pkg_name)
+    new_lines.append(line)
 
-    def make_replace_dep_table(path, name):
-        def replace_dep_table(m):
-            header = m.group(1)
-            body = m.group(2)
-            if 'package = "' + name + '"' in body:
-                body = re.sub(r'^version\s*=\s*"[^"]*"\s*\n', '', body, flags=re.MULTILINE)
-                return header + 'path = "' + path + '"\n' + body
-            return m.group(0)
-        return replace_dep_table
-
-    content = re.sub(
-        r'(\[dependencies\.[^\]]+\]\n)(.*?)(?=\n\[|\Z)',
-        make_replace_dep_table(rel_path, pkg_name), content, flags=re.DOTALL
-    )
+content = '\n'.join(new_lines)
 
 with open(cargo_toml, 'w') as f:
     f.write(content)
-print('    已写入 ' + cargo_toml)
+
+if patched_pkgs:
+    print('    已修补依赖: ' + ', '.join(set(patched_pkgs)) + ' -> ' + cargo_toml)
+else:
+    print('    警告: 未找到任何匹配的依赖行，请检查 ' + cargo_toml)
 PYEOF
     done
     echo ""

@@ -6,7 +6,7 @@
 set -e
 
 BASE="$(pwd)"
-WAIT_SECS=40   # crates.io 索引刷新等待时间
+WAIT_SECS=10   # crates.io 索引刷新等待时间
 
 # 统计
 _SKIPPED=()

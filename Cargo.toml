@@ -1,6 +1,6 @@
 [package]
 name = "tg-rcore-tutorial"
-version = "0.4.6-preview.2"
+version = "0.4.8"
 edition = "2024"
 authors = ["YdrMaster <ydrml@hotmail.com>", "Yifan Wang <w-yf22@mails.tsinghua.edu.cn>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Meta crate bundle for rCore Tutorial workspace - contains all chapters and components"
@@ -21,9 +21,8 @@ include = [
     ".gitmodules",
     "src/**",
     "bundle/submodules.tar.gz",
-    "scripts/compress_submodules.sh",
-    "scripts/extract_submodules.sh",
-    "scripts/crates.txt",
+    "docs/**",
+    "scripts/**",
 ]
 
 [profile.dev]
