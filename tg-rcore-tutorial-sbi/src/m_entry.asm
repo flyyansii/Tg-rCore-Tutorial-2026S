@@ -67,6 +67,11 @@ m_trap_vector:
     sd a6, 80(sp)
     sd a7, 88(sp)
 
+    # 先判断是否为 M 态定时器中断：mcause = Interrupt(MachineTimer=7)
+    csrr t0, mcause
+    li t1, 0x8000000000000007
+    beq t0, t1, m_handle_mtimer
+
     # 调用 Rust 侧分发函数（msbi.rs::m_trap_handler）
     call m_trap_handler
 
@@ -92,6 +97,33 @@ m_trap_vector:
     # 切回原先（S 态侧）栈指针
     csrrw sp, mscratch, sp
     # 返回到触发 ecall 的 S 态上下文
+    mret
+
+m_handle_mtimer:
+    # 先关闭 MTIE，避免在 S 态重新编程下一次定时器前反复进入 M 态
+    li t0, (1 << 7)
+    csrc mie, t0
+
+    # 将 M 态定时器中断转发为 S 态定时器中断（置 STIP）
+    li t0, (1 << 5)
+    csrs mip, t0
+
+    # 对于异步中断，不推进 mepc，直接恢复上下文返回
+    ld ra, 0(sp)
+    ld t0, 8(sp)
+    ld t1, 16(sp)
+    ld t2, 24(sp)
+    ld a0, 32(sp)
+    ld a1, 40(sp)
+    ld a2, 48(sp)
+    ld a3, 56(sp)
+    ld a4, 64(sp)
+    ld a5, 72(sp)
+    ld a6, 80(sp)
+    ld a7, 88(sp)
+
+    addi sp, sp, 128
+    csrrw sp, mscratch, sp
     mret
 
     .section .bss.m_stack
