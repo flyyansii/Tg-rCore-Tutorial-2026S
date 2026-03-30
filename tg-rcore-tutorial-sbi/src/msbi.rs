@@ -143,6 +143,14 @@ fn handle_timer(time: u64) -> SbiRet {
     unsafe {
         (CLINT_MTIMECMP as *mut u64).write_volatile(time);
     }
+    // 开启 M 态定时器中断（MTIE）：仅在成功编程 mtimecmp 后打开，避免启动早期中断风暴。
+    // SAFETY: 修改 mie CSR 是有效的 M-mode 操作。
+    unsafe {
+        asm!(
+            "csrs mie, {}",
+            in(reg) (1 << 7), // Set MTIE
+        );
+    }
     // 清除挂起的 S-mode 定时器中断（STIP），避免“旧中断状态”干扰下一次调度。
     // SAFETY: 修改 mip CSR 以清除 STIP 位是有效的 M-mode 操作。
     // 这是确认定时器中断所必需的。
