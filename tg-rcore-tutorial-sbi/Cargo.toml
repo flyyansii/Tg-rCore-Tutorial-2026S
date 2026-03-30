@@ -1,9 +1,9 @@
 [package]
 name = "tg-rcore-tutorial-sbi"
 description = "SBI (Supervisor Binary Interface) call wrappers for rCore tutorial OS."
-version = "0.4.8"
+version = "0.4.9"
 edition = "2024"
-authors = ["Ivans-11 <w-yf22@mails.tsinghua.edu.cn>"]
+authors = ["WangYifan <w-yf22@mails.tsinghua.edu.cn>", "QinFeiran<qfr23@mails.tsinghua.edu.cn>"]
 repository = "https://github.com/rcore-os/tg-rcore-tutorial-sbi"
 homepage = "https://github.com/rcore-os/tg-rcore-tutorial-sbi/tree/test"
 documentation = "https://docs.rs/tg-rcore-tutorial-sbi"
