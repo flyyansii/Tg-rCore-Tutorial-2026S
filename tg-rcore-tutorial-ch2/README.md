@@ -23,7 +23,7 @@
 ## 项目结构
 
 ```
-ch2/
+tg-rcore-tutorial-ch2/
 ├── .cargo/
 │   └── config.toml     # Cargo 配置：交叉编译目标和 QEMU runner
 ├── build.rs            # 构建脚本：下载编译用户程序，生成链接脚本和 APP_ASM
@@ -139,14 +139,14 @@ cd tg-rcore-tutorial-ch2
 
 ```bash
 git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
-cd tg-rcore-tutorial-ch2
+cd tg-rcore-tutorial/tg-rcore-tutorial-ch2
 ```
 
 ## 二、编译与运行
 
 ### 2.1 编译
 
-在 `tg-rcore-tutorial-ch2`（或 `tg-rcore-tutorial-ch2`）目录下执行：
+在 `tg-rcore-tutorial-ch2` 目录下执行：
 
 ```bash
 cargo build
@@ -400,30 +400,33 @@ Trap 进入内核 → handle_syscall
 
 ### 4.1 `src/main.rs` —— 内核主体
 
-程序结构分为六个部分：
+程序结构分为若干部分（行号以当前 `src/main.rs` 为准）：
 
-**模块文档与属性（第 1-21 行）：**
+**模块文档与 crate 属性（第 1-27 行）：**
 与第一章相同的 `#![no_std]`、`#![no_main]` 和条件编译属性。
 
-**外部依赖引入（第 23-38 行）：**
+**外部依赖（第 29-44 行）：**
 - `tg_console`：`print!` / `println!` 宏和日志功能
 - `riscv::register::*`：访问 CSR 寄存器（如 `scause`）
 - `tg_kernel_context::LocalContext`：用户上下文管理
 - `tg_syscall`：系统调用分发框架
 
-**启动与数据嵌入（第 42-47 行）：**
-- `global_asm!(include_str!(env!("APP_ASM")))`：将用户程序二进制数据嵌入内核
-- `tg_linker::boot0!(rust_main; stack = 8 * 4096)`：定义入口，分配 32 KiB 内核栈
+**用户程序嵌入与内核入口（第 46-73 行）：**
+- `global_asm!(include_str!(env!("APP_ASM")))`（第 50-51 行）：将用户程序二进制嵌入内核
+- 裸函数 `_start`（第 57-73 行）：位于 `.text.entry`，在 `.boot.stack` 段分配 `8 * 4096` 字节（32 KiB）内核栈并跳转到 `rust_main`。源码中**未**使用 `tg_linker::boot0!` 宏，而是内联 `_start`，以避免已发布的 linker 与 Rust 2024 在属性语义上的差异影响 `cargo publish --dry-run`
 
-**内核主函数 `rust_main`（第 51-107 行）：**
-核心的批处理循环：初始化 → 遍历用户程序 → 创建上下文 → execute → 处理 Trap → 下一个
+**内核主函数 `rust_main`（第 78-145 行）：**
+批处理循环：初始化 → 遍历用户程序 → 创建上下文 → `execute` → 处理 Trap → 下一个
 
-**系统调用处理 `handle_syscall`（第 121-142 行）：**
+**系统调用处理 `handle_syscall`（第 172-193 行）：**
 从上下文提取 syscall ID 和参数，分发到 `tg_syscall::handle`，将返回值写回 `a0`
 
-**接口实现模块 `impls`（第 146-194 行）：**
+**接口实现模块 `impls`（第 198-249 行）：**
 - `Console`：通过 SBI 实现字符输出
 - `SyscallContext`：实现 `write` 和 `exit` 系统调用
+
+**panic（第 150-154 行）与非 RISC-V `stub`（第 254-271 行）：**
+与第一章类似，主机平台占位编译
 
 ### 4.2 `build.rs` —— 构建脚本
 
@@ -503,7 +506,7 @@ Trap 进入内核 → handle_syscall
 | 功能组件 | 所涉及核心知识点 | 主要完成功能 | 所依赖的组件 |
 |:-----|:------------|:---------|:----------------------|
 | **tg-rcore-tutorial-sbi** | SBI（Supervisor Binary Interface）<br>console_putchar / console_getchar<br>系统关机（shutdown）<br>RISC-V 特权级（M/S-mode）<br>ecall 指令 | S→M 模式的 SBI 调用封装<br>字符输出 / 字符读取<br>系统关机<br>支持 nobios 直接操作 UART | 无 |
-| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口点（boot0! 宏）<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>入口宏（boot0!）<br>段信息迭代 | 无 |
+| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口：可选用 `boot0!`；本教程各章内核为内联 `_start` + `.boot.stack`<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>亦提供 `boot0!` 宏；教程正文采用手写 `_start` 入口<br>段信息迭代 | 无 |
 | **tg-rcore-tutorial-console** | 控制台 I/O<br>格式化输出（print! / println!）<br>日志系统（Log Level）<br>自旋锁保护的全局控制台 | 可定制 print! / println! 宏<br>log::Log 日志实现<br>Console trait 抽象底层输出 | 无 |
 | **tg-rcore-tutorial-kernel-context** | 上下文（Context）<br>Trap 帧（Trap Frame）<br>寄存器保存与恢复<br>特权级切换<br>stvec / sepc / scause CSR<br>LocalContext（本地上下文）<br>ForeignContext（跨地址空间上下文）<br>异界传送门（MultislotPortal） | 用户/内核态切换上下文管理<br>LocalContext 结构<br>ForeignContext（含 satp）<br>MultislotPortal 跨地址空间执行 | 无 |
 | **tg-rcore-tutorial-kernel-alloc** | 内核堆分配器<br>伙伴系统（Buddy Allocation）<br>动态内存管理<br>#[global_allocator] | 基于伙伴算法的 GlobalAlloc<br>堆初始化（init）<br>物理内存转移（transfer） | 无 |
@@ -517,7 +520,7 @@ Trap 进入内核 → handle_syscall
 | **tg-rcore-tutorial-sync** | 互斥锁（Mutex trait: lock / unlock）<br>阻塞互斥锁（MutexBlocking）<br>信号量（Semaphore: up / down）<br>条件变量（Condvar: signal / wait_with_mutex）<br>等待队列（VecDeque\<ThreadId\>）<br>UPIntrFreeCell | MutexBlocking 阻塞互斥锁<br>Semaphore 信号量<br>Condvar 条件变量<br>通过 ThreadId 与调度器交互 | tg-rcore-tutorial-task-manage |
 | **tg-rcore-tutorial-user** | 用户态程序（User-space App）<br>用户库（User Library）<br>系统调用封装（syscall wrapper）<br>用户堆分配器<br>用户态 print! / println! | 用户测试程序运行时库<br>系统调用封装<br>用户堆分配器<br>各章节测试用例（ch2~ch8） | tg-rcore-tutorial-console<br>tg-rcore-tutorial-syscall |
 | **tg-rcore-tutorial-checker** | 测试验证<br>输出模式匹配<br>正则表达式（Regex）<br>测试用例判定 | rCore-Tutorial CLI 测试输出检查工具<br>验证内核输出匹配预期模式<br>支持 --ch N 和 --exercise 模式 | 无 |
-| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口点（boot0! 宏）<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>入口宏（boot0!）<br>段信息迭代 | 无 |
+| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口：可选用 `boot0!`；本教程各章内核为内联 `_start` + `.boot.stack`<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>亦提供 `boot0!` 宏；教程正文采用手写 `_start` 入口<br>段信息迭代 | 无 |
 
 ## License
 
