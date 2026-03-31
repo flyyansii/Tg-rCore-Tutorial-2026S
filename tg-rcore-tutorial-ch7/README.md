@@ -27,7 +27,7 @@
 ## 项目结构
 
 ```
-ch7/
+tg-rcore-tutorial-ch7/
 ├── .cargo/
 │   └── config.toml     # Cargo 配置：交叉编译目标和 QEMU runner
 ├── .gitignore           # Git 忽略规则
@@ -146,7 +146,7 @@ cd tg-rcore-tutorial-ch7
 
 ```bash
 git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
-cd tg-rcore-tutorial-ch7
+cd tg-rcore-tutorial/tg-rcore-tutorial-ch7
 ```
 
 ## 二、编译与运行
@@ -455,6 +455,8 @@ I/O 重定向通过文件描述符的"关闭-复制"技巧实现：
 
 ### 4.1 `src/main.rs` —— 内核主体
 
+**源码行号速查（当前 `src/main.rs`）：** `_start` 第 111-127 行（32 页内核栈）；`rust_main` 第 180-278 行；`kernel_space` 第 287 行起；`impls` 第 356-851 行；`stub` 第 855 行起。入口为内联 `_start`，未使用 `boot0!`。
+
 **与第六章的区别：**
 - 新增 `tg_syscall::init_signal()` 初始化信号系统调用
 - 主调度循环中，系统调用返回前新增**信号处理**：
@@ -568,7 +570,7 @@ tg-rcore-tutorial-ch7
 | **tg-rcore-tutorial-sync** | 互斥锁（Mutex trait: lock / unlock）<br>阻塞互斥锁（MutexBlocking）<br>信号量（Semaphore: up / down）<br>条件变量（Condvar: signal / wait_with_mutex）<br>等待队列（VecDeque\<ThreadId\>）<br>UPIntrFreeCell | MutexBlocking 阻塞互斥锁<br>Semaphore 信号量<br>Condvar 条件变量<br>通过 ThreadId 与调度器交互 | tg-rcore-tutorial-task-manage |
 | **tg-rcore-tutorial-user** | 用户态程序（User-space App）<br>用户库（User Library）<br>系统调用封装（syscall wrapper）<br>用户堆分配器<br>用户态 print! / println! | 用户测试程序运行时库<br>系统调用封装<br>用户堆分配器<br>各章节测试用例（ch2~ch8） | tg-rcore-tutorial-console<br>tg-rcore-tutorial-syscall |
 | **tg-rcore-tutorial-checker** | 测试验证<br>输出模式匹配<br>正则表达式（Regex）<br>测试用例判定 | rCore-Tutorial CLI 测试输出检查工具<br>验证内核输出匹配预期模式<br>支持 --ch N 和 --exercise 模式 | 无 |
-| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口点（boot0! 宏）<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>入口宏（boot0!）<br>段信息迭代 | 无 |
+| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口：可选用 `boot0!`；本教程各章内核为内联 `_start` + `.boot.stack`<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>亦提供 `boot0!` 宏；教程正文采用手写 `_start` 入口<br>段信息迭代 | 无 |
 ## License
 
 Licensed under GNU GENERAL PUBLIC LICENSE, Version 3.0.
