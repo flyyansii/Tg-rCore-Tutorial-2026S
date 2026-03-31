@@ -1,7 +1,7 @@
 [package]
 name = "tg-rcore-tutorial-ch5"
 description = "Chapter 5 of rCore Tutorial: Process management with fork, exec and wait syscalls."
-version = "0.4.9"
+version = "0.4.10"
 edition = "2024"
 authors = ["YdrMaster <ydrml@hotmail.com>","Yifan Wang<w-yf22@mails.tsinghua.edu.cn>","Yu Chen <yuchen@tsinghua.edu.cn>"]
 repository = "https://github.com/rcore-os/tg-rcore-tutorial-ch5"
@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["rcore", "tutorial", "no-std", "riscv", "process"]
 categories = ["no-std", "embedded"]
 exclude = [
-    "tg-user/**",
+    "tg-rcore-tutorial-user/**",
 #    ".cargo/config.toml",
 ]
 

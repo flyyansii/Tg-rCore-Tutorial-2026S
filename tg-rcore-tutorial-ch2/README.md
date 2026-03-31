@@ -138,7 +138,7 @@ cd tg-rcore-tutorial-ch2
 **方式二：获取所有实验**
 
 ```bash
-git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
+git clone https://github.com/rcore-os/tg-rcore-tutorial.git
 cd tg-rcore-tutorial/tg-rcore-tutorial-ch2
 ```
 
@@ -506,7 +506,6 @@ Trap 进入内核 → handle_syscall
 | 功能组件 | 所涉及核心知识点 | 主要完成功能 | 所依赖的组件 |
 |:-----|:------------|:---------|:----------------------|
 | **tg-rcore-tutorial-sbi** | SBI（Supervisor Binary Interface）<br>console_putchar / console_getchar<br>系统关机（shutdown）<br>RISC-V 特权级（M/S-mode）<br>ecall 指令 | S→M 模式的 SBI 调用封装<br>字符输出 / 字符读取<br>系统关机<br>支持 nobios 直接操作 UART | 无 |
-| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口：可选用 `boot0!`；本教程各章内核为内联 `_start` + `.boot.stack`<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>亦提供 `boot0!` 宏；教程正文采用手写 `_start` 入口<br>段信息迭代 | 无 |
 | **tg-rcore-tutorial-console** | 控制台 I/O<br>格式化输出（print! / println!）<br>日志系统（Log Level）<br>自旋锁保护的全局控制台 | 可定制 print! / println! 宏<br>log::Log 日志实现<br>Console trait 抽象底层输出 | 无 |
 | **tg-rcore-tutorial-kernel-context** | 上下文（Context）<br>Trap 帧（Trap Frame）<br>寄存器保存与恢复<br>特权级切换<br>stvec / sepc / scause CSR<br>LocalContext（本地上下文）<br>ForeignContext（跨地址空间上下文）<br>异界传送门（MultislotPortal） | 用户/内核态切换上下文管理<br>LocalContext 结构<br>ForeignContext（含 satp）<br>MultislotPortal 跨地址空间执行 | 无 |
 | **tg-rcore-tutorial-kernel-alloc** | 内核堆分配器<br>伙伴系统（Buddy Allocation）<br>动态内存管理<br>#[global_allocator] | 基于伙伴算法的 GlobalAlloc<br>堆初始化（init）<br>物理内存转移（transfer） | 无 |

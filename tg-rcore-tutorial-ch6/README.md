@@ -143,7 +143,7 @@ cd tg-rcore-tutorial-ch6
 **方式二：获取所有实验**
 
 ```bash
-git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
+git clone https://github.com/rcore-os/tg-rcore-tutorial.git
 cd tg-rcore-tutorial/tg-rcore-tutorial-ch6
 ```
 

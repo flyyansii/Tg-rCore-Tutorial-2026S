@@ -136,7 +136,7 @@ cd tg-rcore-tutorial-ch1
 **方式二：获取所有 8 个实验与依赖的 tg-* crates**
 
 ```bash
-git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
+git clone https://github.com/rcore-os/tg-rcore-tutorial.git
 cd tg-rcore-tutorial/tg-rcore-tutorial-ch1
 ```
 
