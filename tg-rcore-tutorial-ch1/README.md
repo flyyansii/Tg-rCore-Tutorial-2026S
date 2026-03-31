@@ -125,17 +125,19 @@ qemu-system-riscv64 --version
 ```
 
 ### 1.4 获取源代码
-**方式一**
-只获取本实验
+
+**方式一：只获取本实验**
+
 ```bash
 cargo clone tg-rcore-tutorial-ch1
 cd tg-rcore-tutorial-ch1
 ```
-获取所有8个实验和所依赖的tg-* crates.
-**方式二**
+
+**方式二：获取所有 8 个实验与依赖的 tg-* crates**
+
 ```bash
-git clone https://github.com/rcore-os/tg-rcore-tutorial.git
-cd tg-rcore-tutorial/ch1
+git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
+cd tg-rcore-tutorial/tg-rcore-tutorial-ch1
 ```
 
 ## 二、编译与运行
@@ -453,30 +455,32 @@ fn main() {
 
 整个程序由五部分组成：
 
-**模块文档与属性标记（第 1-19 行）：**
-- 模块级文档注释（`//!`）概述本章关键概念
+**模块文档（第 1-16 行）：**
+- 模块级文档注释（`//!`）概述本章关键概念与阅读顺序
+
+**crate 属性（第 18-25 行）：**
 - `#![no_std]`：不使用标准库
 - `#![no_main]`：不使用标准入口
-- `cfg_attr`：在 RISC-V 64 上启用严格警告，其他架构允许死代码（用于 `cargo publish --dry-run` 在主机上通过编译）
+- `cfg_attr`：在 RISC-V 64 上启用严格警告与 `missing_docs`，其他架构允许死代码（用于 `cargo publish --dry-run` 在主机上通过编译）
 
-**SBI 引入（第 21-23 行）：**
+**SBI 引入（第 27-29 行）：**
 - `use tg_sbi::{console_putchar, shutdown}` 明确引入所需的两个 SBI 函数
 
-**入口函数 `_start`（第 34-53 行）：**
+**入口函数 `_start`（第 40-59 行）：**
 - 仅在 `riscv64` 架构下编译（`#[cfg(target_arch = "riscv64")]`）
 - 裸函数，放置在 `.text.entry` 段，链接脚本将其安排在 `0x80200000`
-- edition 2024 要求使用 `#[unsafe(no_mangle)]`、`#[unsafe(link_section = "...")]` 语法
-- 分配 4 KiB 栈空间，设置 `sp` 后跳转到 `rust_main`
+- edition 2024 要求使用 `#[unsafe(naked)]`、`#[unsafe(no_mangle)]`、`#[unsafe(link_section = "...")]` 语法
+- 在 `.bss.uninit` 段分配 4 KiB 栈，设置 `sp` 后跳转到 `rust_main`
 
-**主函数 `rust_main`（第 59-64 行）：**
+**主函数 `rust_main`（第 65-70 行）：**
 - 逐字节调用 `console_putchar` 输出 "Hello, world!\n"
 - 调用 `shutdown(false)` 正常关机
 
-**panic 处理（第 69-72 行）：**
+**panic 处理（第 75-78 行）：**
 - 发生 panic 时调用 `shutdown(true)` 以异常方式关机
 
-**非 RISC-V 占位模块 `stub`（第 78-95 行）：**
-- 提供 `main`、`__libc_start_main` 等符号，使得在非 RISC-V 平台上也能通过编译（用于 `cargo publish --dry-run` 验证）
+**非 RISC-V 占位模块 `stub`（第 84-101 行）：**
+- 提供 `main`、`__libc_start_main`、`rust_eh_personality` 等符号，使得在非 RISC-V 平台上也能通过编译（用于 `cargo publish --dry-run` 验证）
 
 ---
 
@@ -549,7 +553,7 @@ fn main() {
 | **tg-rcore-tutorial-sync** | 互斥锁（Mutex trait: lock / unlock）<br>阻塞互斥锁（MutexBlocking）<br>信号量（Semaphore: up / down）<br>条件变量（Condvar: signal / wait_with_mutex）<br>等待队列（VecDeque\<ThreadId\>）<br>UPIntrFreeCell | MutexBlocking 阻塞互斥锁<br>Semaphore 信号量<br>Condvar 条件变量<br>通过 ThreadId 与调度器交互 | tg-rcore-tutorial-task-manage |
 | **tg-rcore-tutorial-user** | 用户态程序（User-space App）<br>用户库（User Library）<br>系统调用封装（syscall wrapper）<br>用户堆分配器<br>用户态 print! / println! | 用户测试程序运行时库<br>系统调用封装<br>用户堆分配器<br>各章节测试用例（ch2~ch8） | tg-rcore-tutorial-console<br>tg-rcore-tutorial-syscall |
 | **tg-rcore-tutorial-checker** | 测试验证<br>输出模式匹配<br>正则表达式（Regex）<br>测试用例判定 | rCore-Tutorial CLI 测试输出检查工具<br>验证内核输出匹配预期模式<br>支持 --ch N 和 --exercise 模式 | 无 |
-| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口点（boot0! 宏）<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>入口宏（boot0!）<br>段信息迭代 | 无 |
+| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口：可选用 `boot0!`；本教程各章内核为内联 `_start` + `.boot.stack`<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>亦提供 `boot0!` 宏；教程正文采用手写 `_start` 入口<br>段信息迭代 | 无 |
 ## License
 
 Licensed under GNU GENERAL PUBLIC LICENSE, Version 3.0.
