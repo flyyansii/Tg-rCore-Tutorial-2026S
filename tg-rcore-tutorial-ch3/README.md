@@ -23,7 +23,7 @@
 ## 项目结构
 
 ```
-ch3/
+tg-rcore-tutorial-ch3/
 ├── .cargo/
 │   └── config.toml     # Cargo 配置：交叉编译目标和 QEMU runner
 ├── .gitignore           # Git 忽略规则
@@ -143,14 +143,14 @@ cd tg-rcore-tutorial-ch3
 
 ```bash
 git clone --recurse-submodules https://github.com/rcore-os/tg-rcore-tutorial.git
-cd tg-rcore-tutorial-ch3
+cd tg-rcore-tutorial/tg-rcore-tutorial-ch3
 ```
 
 ## 二、编译与运行
 
 ### 2.1 编译
 
-在 `tg-rcore-tutorial-ch3`（或 `tg-rcore-tutorial-ch3`）目录下执行：
+在 `tg-rcore-tutorial-ch3` 目录下执行：
 
 ```bash
 cargo build
@@ -462,20 +462,20 @@ tg-rcore-tutorial-ch3 引入了 `SchedulingEvent` 枚举来统一描述系统调
 
 ### 4.1 `src/main.rs` —— 内核主体
 
-程序结构分为五个部分：
+程序结构分为若干部分（行号以当前 `src/main.rs` 为准）：
 
-**模块文档与属性（第 1-22 行）：**
-与第二章相同的 `#![no_std]`、`#![no_main]` 和条件编译属性。新增了 `mod task` 引入任务管理模块。
+**模块文档与 crate 属性（第 1-27 行）：**
+与第二章相同的 `#![no_std]`、`#![no_main]` 和条件编译属性。
 
-**外部依赖引入（第 30-41 行）：**
-与第二章类似，但增加了 `task::TaskControlBlock` 的引用。
+**`mod task` 与外部依赖（第 29-45 行）：**
+引入 `task::TaskControlBlock`，以及 `tg_console`、`riscv`、`tg_kernel_context`、`tg_sbi`、`tg_syscall` 等。
 
-**启动与初始化（第 45-56 行）：**
-- `global_asm!(include_str!(env!("APP_ASM")))`：嵌入用户程序
-- `APP_CAPACITY = 32`：最大支持 32 个应用
-- `boot0!(rust_main; stack = (APP_CAPACITY + 2) * 8192)`：分配 272 KiB 内核栈（因为 TCB 中包含用户栈）
+**用户程序嵌入与内核入口（第 47-78 行）：**
+- `global_asm!(include_str!(env!("APP_ASM")))`（第 51-52 行）：嵌入用户程序
+- `APP_CAPACITY = 32`（第 55 行）：最大支持 32 个应用
+- 裸函数 `_start`（第 62-78 行）：在 `.boot.stack` 段分配 `(APP_CAPACITY + 2) * 8192` 字节（272 KiB）内核栈并跳转到 `rust_main`。与第二章相同，**未**使用 `tg_linker::boot0!`，而是内联 `_start`（原因见第二章 README）
 
-**内核主函数 `rust_main`（第 60-153 行）：**
+**内核主函数 `rust_main`（第 88-198 行）：**
 
 核心的多道程序循环：
 
@@ -498,7 +498,9 @@ while remain > 0 {
 shutdown()
 ```
 
-**接口实现模块 `impls`（第 164-237 行）：**
+**panic（第 202-207 行）与 `stub`（第 319-339 行）：** 与第二章一致。
+
+**接口实现模块 `impls`（第 212-317 行）：**
 在第二章的 `Console`、`IO`、`Process` 基础上，新增了：
 - `Scheduling`：处理 yield 系统调用
 - `Clock`：处理 clock_gettime 系统调用
@@ -690,7 +692,7 @@ cargo run --features exercise
 | **tg-rcore-tutorial-sync** | 互斥锁（Mutex trait: lock / unlock）<br>阻塞互斥锁（MutexBlocking）<br>信号量（Semaphore: up / down）<br>条件变量（Condvar: signal / wait_with_mutex）<br>等待队列（VecDeque\<ThreadId\>）<br>UPIntrFreeCell | MutexBlocking 阻塞互斥锁<br>Semaphore 信号量<br>Condvar 条件变量<br>通过 ThreadId 与调度器交互 | tg-rcore-tutorial-task-manage |
 | **tg-rcore-tutorial-user** | 用户态程序（User-space App）<br>用户库（User Library）<br>系统调用封装（syscall wrapper）<br>用户堆分配器<br>用户态 print! / println! | 用户测试程序运行时库<br>系统调用封装<br>用户堆分配器<br>各章节测试用例（ch2~ch8） | tg-rcore-tutorial-console<br>tg-rcore-tutorial-syscall |
 | **tg-rcore-tutorial-checker** | 测试验证<br>输出模式匹配<br>正则表达式（Regex）<br>测试用例判定 | rCore-Tutorial CLI 测试输出检查工具<br>验证内核输出匹配预期模式<br>支持 --ch N 和 --exercise 模式 | 无 |
-| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口点（boot0! 宏）<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>入口宏（boot0!）<br>段信息迭代 | 无 |
+| **tg-rcore-tutorial-linker** | 链接脚本（Linker Script）<br>内核内存布局（KernelLayout）<br>.text / .rodata / .data / .bss / .boot 段<br>入口：可选用 `boot0!`；本教程各章内核为内联 `_start` + `.boot.stack`<br>BSS 段清零 | 形成内核空间布局的链接脚本模板<br>用于 build.rs 工具构建 linker.ld<br>内核布局定位（KernelLayout::locate）<br>亦提供 `boot0!` 宏；教程正文采用手写 `_start` 入口<br>段信息迭代 | 无 |
 ## License
 
 Licensed under GNU GENERAL PUBLIC LICENSE, Version 3.0.
