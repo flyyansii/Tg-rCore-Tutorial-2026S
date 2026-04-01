@@ -91,6 +91,8 @@ cargo run --features exercise
 - 测试练习测例：
 ```bash
 ./test.sh exercise
+# 自动测试时，可根据需要设置超时时间（单位：秒），例如：
+TIMEOUT_SEC=300 ./test.sh exercise
 ```
 
 ### 说明

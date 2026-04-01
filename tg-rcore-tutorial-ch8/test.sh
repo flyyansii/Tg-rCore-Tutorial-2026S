@@ -6,6 +6,10 @@
 #   ./test.sh base     # 运行基础测试
 #   ./test.sh exercise # 运行练习测试
 #   ./test.sh all      # 运行全部测试（base + exercise）
+#
+# 可选环境变量：
+#   TIMEOUT_SEC  设为正整数（秒）时：仅对 cargo run 限时，输出写入临时文件并 tee 到终端，
+#                        结束或超时后由 tg-rcore-tutorial-checker 检查该文件。未设置则行为与原先一致（管道直连 checker）。
 
 set -e
 
@@ -14,7 +18,6 @@ RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-# 检查并安装 tg-rcore-tutorial-checker
 ensure_tg_checker() {
     if ! command -v tg-rcore-tutorial-checker &> /dev/null; then
         echo -e "${YELLOW}tg-rcore-tutorial-checker 未安装，正在安装...${NC}"
@@ -29,17 +32,56 @@ ensure_tg_checker() {
 
 ensure_tg_checker
 
-# 使用 pipefail 确保管道中任意命令失败都能被捕获
 set -o pipefail
+
+# 超时路径：调用前设置 CARGO_EXTRA（数组，可为空）；参数传给 checker（如 --exercise）。
+_tg_timed_cargo_check() {
+    local log re ce
+    log=$(mktemp) || return 1
+    trap 'rm -f "$log"' EXIT
+    set +e
+    echo -e "${YELLOW}cargo run 超时: ${TIMEOUT_SEC}s（TIMEOUT_SEC）${NC}"
+    timeout -k 10 --foreground "${TIMEOUT_SEC}" cargo run "${CARGO_EXTRA[@]}" 2>&1 | tee "$log" | tee /dev/stderr
+    re=${PIPESTATUS[0]}
+    set -e
+    [[ $re -eq 124 ]] && echo -e "${RED}✗ cargo run 已超时，仅统计超时前输出。${NC}" >&2
+    set +e
+    tg-rcore-tutorial-checker --ch 8 "$@" <"$log"
+    ce=$?
+    set -e
+    trap - EXIT
+    rm -f "$log"
+    [[ $re -eq 0 && $ce -eq 0 ]]
+}
+
+_run_base() {
+    local passed
+    if [[ -n "${TIMEOUT_SEC:-}" ]] && [[ "${TIMEOUT_SEC}" =~ ^[0-9]+$ ]] && [[ "${TIMEOUT_SEC}" -gt 0 ]]; then
+        CARGO_EXTRA=()
+        if _tg_timed_cargo_check; then passed=1; else passed=0; fi
+    else
+        if cargo run 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 8; then passed=1; else passed=0; fi
+    fi
+    [[ $passed -eq 1 ]]
+}
+
+_run_exercise() {
+    local passed
+    if [[ -n "${TIMEOUT_SEC:-}" ]] && [[ "${TIMEOUT_SEC}" =~ ^[0-9]+$ ]] && [[ "${TIMEOUT_SEC}" -gt 0 ]]; then
+        CARGO_EXTRA=(--features exercise)
+        if _tg_timed_cargo_check --exercise; then passed=1; else passed=0; fi
+    else
+        if cargo run --features exercise 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 8 --exercise; then passed=1; else passed=0; fi
+    fi
+    [[ $passed -eq 1 ]]
+}
 
 run_base() {
     echo "运行 ch8 基础测试..."
     cargo clean
     export CHAPTER=-8
     echo -e "${YELLOW}────────── cargo run 输出 ──────────${NC}"
-
-    # 使用 tee 将 cargo run 的输出同时显示在终端和传递给 tg-rcore-tutorial-checker
-    if cargo run 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 8; then
+    if _run_base; then
         echo ""
         echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
         echo -e "${GREEN}✓ ch8 基础测试通过${NC}"
@@ -59,9 +101,7 @@ run_exercise() {
     cargo clean
     export CHAPTER=8
     echo -e "${YELLOW}────────── cargo run --features exercise 输出 ──────────${NC}"
-
-    # 使用 tee 将 cargo run 的输出同时显示在终端和传递给 tg-rcore-tutorial-checker
-    if cargo run --features exercise 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 8 --exercise; then
+    if _run_exercise; then
         echo ""
         echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
         echo -e "${GREEN}✓ ch8 练习测试通过${NC}"

@@ -750,6 +750,8 @@ cargo run --features exercise
 
 ```bash
 ./test.sh exercise
+# CI中，可根据需要设置超时时间（单位：秒），例如：
+TIMEOUT_SEC=300 ./test.sh exercise
 ```
 
 > **说明**：本次实验框架变动较大，不要求合并之前的实验内容，只需通过 ch8 的全部测例和其他章节的基础测例即可。
