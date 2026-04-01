@@ -1,0 +1,212 @@
+name: Ranking
+
+on: [push]
+
+env:
+  CARGO_TERM_COLOR: always
+  NO_COLOR: 1
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 5 个练习章的 exercise 测试 (ch3, ch4, ch5, ch6, ch8)
+  # ──────────────────────────────────────────────
+  test-ch3:
+    name: Test ch3 exercise
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/chyyuu/tangram-crates:latest
+    defaults:
+      run:
+        working-directory: tg-rcore-tutorial-ch3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-ch3-cargo-${{ hashFiles('tg-rcore-tutorial-ch3/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-ch3-cargo-
+      - name: Run ch3 exercise tests
+        run: bash test.sh exercise
+
+  test-ch4:
+    name: Test ch4 exercise
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/chyyuu/tangram-crates:latest
+    defaults:
+      run:
+        working-directory: tg-rcore-tutorial-ch4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-ch4-cargo-${{ hashFiles('tg-rcore-tutorial-ch4/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-ch4-cargo-
+      - name: Run ch4 exercise tests
+        run: bash test.sh exercise
+
+  test-ch5:
+    name: Test ch5 exercise
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/chyyuu/tangram-crates:latest
+    defaults:
+      run:
+        working-directory: tg-rcore-tutorial-ch5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-ch5-cargo-${{ hashFiles('tg-rcore-tutorial-ch5/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-ch5-cargo-
+      - name: Run ch5 exercise tests
+        run: bash test.sh exercise
+
+  test-ch6:
+    name: Test ch6 exercise
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/chyyuu/tangram-crates:latest
+    defaults:
+      run:
+        working-directory: tg-rcore-tutorial-ch6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-ch6-cargo-${{ hashFiles('tg-rcore-tutorial-ch6/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-ch6-cargo-
+      - name: Run ch6 exercise tests
+        run: bash test.sh exercise
+
+  test-ch8:
+    name: Test ch8 exercise
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/chyyuu/tangram-crates:latest
+    defaults:
+      run:
+        working-directory: tg-rcore-tutorial-ch8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-ch8-cargo-${{ hashFiles('tg-rcore-tutorial-ch8/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-ch8-cargo-
+      - name: Run ch8 exercise tests
+        env:
+          TIMEOUT_SEC: 180
+        run: bash test.sh exercise
+
+  # ──────────────────────────────────────────────
+  # 汇总结果 → 生成 JSON → 上传排行榜
+  # ──────────────────────────────────────────────
+  deploy:
+    name: Deploy ranking
+    needs: [test-ch3, test-ch4, test-ch5, test-ch6, test-ch8]
+    # 即使部分章节失败也继续执行，以便记录已通过的章节；排除模板仓库本身
+    if: always() && github.repository != 'LearningOS/tg-rcore-tutorial'
+    runs-on: ubuntu-latest
+    steps:
+      # 汇总各章测试结果，生成 JSON
+      - name: Generate result JSON
+        id: compute
+        run: |
+          PASSED=0
+          TOTAL=5
+
+          CH3_PASS=false; CH4_PASS=false; CH5_PASS=false; CH6_PASS=false; CH8_PASS=false
+
+          if [ '${{ needs.test-ch3.result }}' = 'success' ]; then CH3_PASS=true; PASSED=$((PASSED+1)); fi
+          if [ '${{ needs.test-ch4.result }}' = 'success' ]; then CH4_PASS=true; PASSED=$((PASSED+1)); fi
+          if [ '${{ needs.test-ch5.result }}' = 'success' ]; then CH5_PASS=true; PASSED=$((PASSED+1)); fi
+          if [ '${{ needs.test-ch6.result }}' = 'success' ]; then CH6_PASS=true; PASSED=$((PASSED+1)); fi
+          if [ '${{ needs.test-ch8.result }}' = 'success' ]; then CH8_PASS=true; PASSED=$((PASSED+1)); fi
+
+          SCORE=$((PASSED * 100))
+
+          # 生成结果 JSON
+          jq -n \
+            --arg user "${{ github.actor }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson ch3 $CH3_PASS \
+            --argjson ch4 $CH4_PASS \
+            --argjson ch5 $CH5_PASS \
+            --argjson ch6 $CH6_PASS \
+            --argjson ch8 $CH8_PASS \
+            --argjson score $SCORE \
+            --argjson total_score 500 \
+            '{
+              user: $user,
+              repo: $repo,
+              ref: $ref,
+              sha: $sha,
+              time: $time,
+              chapters: { ch3: $ch3, ch4: $ch4, ch5: $ch5, ch6: $ch6, ch8: $ch8 },
+              score: $score,
+              total_score: $total_score
+            }' | tee result.json
+
+          echo "passed=${PASSED}" >> $GITHUB_OUTPUT
+          echo "score=${SCORE}" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "===== Summary ====="
+          echo "Passed: ${PASSED}/${TOTAL}  Score: ${SCORE}/500"
+
+      # 上传分数到排行榜 API
+      - name: Upload score
+        run: |
+          score=${{ steps.compute.outputs.score }}
+          echo "Score: $score / 500"
+
+          score_json=$(jq -n \
+            --arg channel github \
+            --argjson courseId ${{ secrets.TG_RCORE_2026_SPRING_COURSE_ID }} \
+            --arg name "${{ github.actor }}" \
+            --argjson score $score \
+            --argjson totalScore 500 \
+            '{channel: $channel, courseId: $courseId, name: $name, score: $score, totalScore: $totalScore}')
+
+          response=$(curl -X POST ${{ secrets.COURSE_POST_API }} \
+            -H "accept: application/json;charset=utf-8" \
+            -H "Content-Type: application/json" \
+            -H "token: ${{ secrets.TG_RCORE_2026_SPRING_TOKEN }}" \
+            -d "$score_json" \
+            -v)
+
+          echo "Response: $response"
+
+          if echo "$response" | grep -q '"result":1'; then
+            echo "Success: The result field contains 1."
+          else
+            echo "Error: The result field does not contain 1."
+            exit 1
+          fi
