@@ -1,7 +1,7 @@
 [package]
 name = "tg-rcore-tutorial-kernel-alloc"
 description = "Kernel memory allocator for rCore tutorial OS using buddy allocation."
-version = "0.4.8"
+version = "0.4.9"
 edition = "2024"
 authors = ["YdrMaster <ydrml@hotmail.com>"]
 repository = "https://github.com/rcore-os/tg-rcore-tutorial-kernel-alloc"
@@ -14,5 +14,5 @@ categories = ["no-std", "embedded", "memory-management"]
 
 [dependencies]
 log = "0.4"
-customizable-buddy = "0.0.3"
+customizable-buddy = "0.0.4"
 page-table = "0.0.6"
