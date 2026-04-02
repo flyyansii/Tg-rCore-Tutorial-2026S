@@ -17,6 +17,22 @@ test:
         image: docker.cnb.cool/nuc-elite/my-dev-makes:tg-rcore-qemu7
       imports: https://cnb.cool/LearningOS/keys-AI4OSE/-/blob/main/ai4osecamp-rcore-secrets.yml
       stages:
+        - name: fetch-pr-code
+          script: |
+            echo "=== Fetching PR code ==="
+            echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
+            echo "PR branch: ${CNB_PULL_REQUEST_BRANCH:-}"
+            echo "PR SHA: ${CNB_PULL_REQUEST_SHA:-}"
+            
+            git remote add source ${CNB_WEB_ENDPOINT}/${CNB_PULL_REQUEST_SLUG}.git || true
+            git fetch source ${CNB_PULL_REQUEST_BRANCH}
+            git checkout -f ${CNB_PULL_REQUEST_SHA}
+            
+            echo "=== After checkout ==="
+            echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
+            echo "Latest commits:"
+            git log --oneline -3
+
         - name: run-tests
           script: |
             mkdir -p /tmp/shared/scores
