@@ -114,7 +114,7 @@ done
 # Create the archive using tar with exclude for .git directories
 echo ""
 echo -e "${GREEN}Creating archive: ${ARCHIVE_PATH}${NC}"
-echo "Excluding: .git, *.o, *.a, target/"
+echo "Excluding: .git, *.o, *.a, target/, tg-rcore-tutorial-user/"
 
 # Use tar to create archive, excluding .git directories
 # We need to change to ROOT_DIR and use relative paths
@@ -126,6 +126,7 @@ tar -czvf "${ARCHIVE_PATH}" \
     --exclude='*.o' \
     --exclude='*.a' \
     --exclude='target' \
+    --exclude='*/tg-rcore-tutorial-user' \
     -T "${TEMP_FILE_LIST}" 2>&1 | tail -5
 
 # Get archive size
