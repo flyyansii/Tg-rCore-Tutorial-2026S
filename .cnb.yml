@@ -3,7 +3,127 @@ $:
     - runner:
         cpus: 16
       docker:
-        image: docker.cnb.cool/learningos/tangram-crates:latest
+        image: docker.cnb.cool/nuc-elite/my-dev-makes:tg-rcore-qemu7
       services:
         - vscode
         - docker
+
+test:
+  pull_request.target:
+    - name: test-all-chapters
+      runner:
+        cpus: 32
+      docker:
+        image: docker.cnb.cool/nuc-elite/my-dev-makes:tg-rcore-qemu7
+      imports: https://cnb.cool/LearningOS/keys-AI4OSE/-/blob/main/ai4osecamp-rcore-secrets.yml
+      stages:
+        - name: run-tests
+          script: |
+            mkdir -p /tmp/shared/scores
+            ORIGINAL_DIR=$(pwd)
+
+            RANK_USER="${CNB_PULL_REQUEST_PROPOSER:-}"
+
+            if [ "${RANK_TEST:-0}" = "1" ]; then
+              RANK_HEADER_TEST="isTest:true"
+            else
+              RANK_HEADER_TEST=""
+            fi
+
+            if [ -z "${RANK_USER:-}" ] || [ -z "${RANK_API:-}" ] || [ -z "${RANK_TOKEN:-}" ] || [ -z "${COURSE_ID:-}" ]; then
+              echo "[WARN] 缺少排行榜必要变量(RANK_USER/RANK_API/RANK_TOKEN/COURSE_ID)，本次跳过推送"
+              RANK_ENABLE="0"
+            else
+              RANK_ENABLE="1"
+            fi
+
+            run_chapter() {
+              ch=$1; timeout_sec=${2:-0}
+              dir="tg-rcore-tutorial-${ch}"
+              if [ ! -d "$dir" ] || [ ! -f "${dir}/test.sh" ]; then
+                echo "0" > "/tmp/shared/scores/${ch}.txt"
+                echo "${ch}: not found"
+                return 0
+              fi
+              cd "$dir"
+              echo "========== Testing ${ch} =========="
+
+              if [ "$timeout_sec" -gt 0 ]; then
+                if TIMEOUT_SEC=$timeout_sec bash test.sh > "/tmp/${ch}.log" 2>&1; then
+                  EXIT_CODE=0
+                else
+                  EXIT_CODE=$?
+                fi
+              else
+                if bash test.sh > "/tmp/${ch}.log" 2>&1; then
+                  EXIT_CODE=0
+                else
+                  EXIT_CODE=$?
+                fi
+              fi
+              
+              cd "$ORIGINAL_DIR"
+
+              if [ "$EXIT_CODE" -eq 0 ]; then
+                echo "100" > "/tmp/shared/scores/${ch}.txt"
+                echo "${ch}: passed"
+              else
+                echo "0" > "/tmp/shared/scores/${ch}.txt"
+                echo "${ch}: failed (exit code: $EXIT_CODE)"
+              fi
+            }
+
+            run_chapter ch3
+            run_chapter ch4
+            run_chapter ch5
+            run_chapter ch6
+            run_chapter ch8 150
+
+            echo ""
+            echo "=== Chapter Scores ==="
+            TOTAL=0
+            for ch in ch3 ch4 ch5 ch6 ch8; do
+              score=$(cat "/tmp/shared/scores/${ch}.txt" 2>/dev/null || echo "0")
+              echo "${ch}: ${score}"
+              TOTAL=$((TOTAL + score))
+            done
+
+            echo ""
+            echo "=== Total: ${TOTAL}/500 ==="
+            echo ""
+
+            if [ "${RANK_ENABLE}" = "1" ]; then
+              echo "==== 推送课程排行榜 ===="
+              JSON_BODY=$(printf '{"channel":"%s","courseId":%s,"ext":"%s","name":"%s","score":%s,"totalScore":%s}' \
+                "${RANK_CHANNEL:-cnb}" "${COURSE_ID}" "{}" "${RANK_USER}" "${TOTAL}" "500")
+
+              echo "[DEBUG] POST ${RANK_API}"
+              echo "[DEBUG] JSON_BODY=${JSON_BODY}"
+
+              HTTP_CODE=$(curl -s -o /tmp/rank_resp.json -w "%{http_code}" \
+                -X POST "${RANK_API}" \
+                -H "Content-Type: application/json" \
+                -H "token: ${RANK_TOKEN}" \
+                ${RANK_HEADER_TEST:+-H "${RANK_HEADER_TEST}"} \
+                -d "${JSON_BODY}")
+
+              echo "[DEBUG] HTTP status: ${HTTP_CODE}"
+              echo "[DEBUG] Response:"
+              cat /tmp/rank_resp.json
+
+              if [ "${HTTP_CODE}" = "200" ]; then
+                RESULT=$(grep -o '"result":[0-9]*' /tmp/rank_resp.json | head -n 1 | cut -d: -f2)
+                if [ "${RESULT}" = "1" ]; then
+                  echo "[INFO] 排行榜推送成功（total=${TOTAL}/500）"
+                else
+                  echo "[WARN] 排行榜接口返回业务异常，result=${RESULT}。详见上方 Response。"
+                fi
+              else
+                echo "[WARN] 排行榜推送失败，HTTP=${HTTP_CODE}。详见上方 Response。"
+              fi
+            else
+              echo "[INFO] 排行榜推送已跳过（未开启或缺少变量）"
+            fi
+
+            echo ""
+            echo "CNB_PULL_REQUEST_PROPOSER=${CNB_PULL_REQUEST_PROPOSER}"
