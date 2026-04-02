@@ -1,0 +1,27 @@
+name: Sync GitHub → CNB (rebase)
+on:
+  push:        # 代码提交就同步
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 必须拉完整历史，rebase 需要
+
+      # 使用 git-sync 镜像 + rebase 模式
+      - name: Sync to CNB
+        uses: docker://tencentcom/git-sync
+        env:
+          # 目标：你的 CNB 仓库地址
+          PLUGIN_TARGET_URL: https://cnb.cool/LearningOS/Tg-rCore-Tutorial-2026S
+
+          # CNB 认证固定写法
+          PLUGIN_AUTH_TYPE: https
+          PLUGIN_USERNAME: cnb
+          PLUGIN_PASSWORD: ${{ secrets.CNB_TOKEN }}
+
+          # 关键：rebase 模式（保留 CNB 上的独有文件）
+          PLUGIN_SYNC_MODE: rebase
