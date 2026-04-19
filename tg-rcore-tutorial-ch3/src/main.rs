@@ -64,7 +64,7 @@ const APP_CAPACITY: usize = 32;
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 unsafe extern "C" fn _start() -> ! {
-    const STACK_SIZE: usize = (APP_CAPACITY + 2) * 8192;
+    const STACK_SIZE: usize = (APP_CAPACITY + 2) * 24576;
     #[unsafe(link_section = ".boot.stack")]
     static mut STACK: [u8; STACK_SIZE] = [0u8; STACK_SIZE];
 
@@ -211,6 +211,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 /// 各依赖库所需接口的具体实现
 mod impls {
     use tg_syscall::*;
+    use crate::task::TaskControlBlock;
 
     /// 控制台实现：通过 SBI 逐字符输出
     pub struct Console;
@@ -302,18 +303,29 @@ mod impls {
     /// - 写入用户内存（trace_request=1）
     /// - 查询系统调用计数（trace_request=2）
     impl Trace for SyscallContext {
-        #[inline]
-        fn trace(
-            &self,
-            _caller: Caller,
-            _trace_request: usize,
-            _id: usize,
-            _data: usize,
-        ) -> isize {
-            tg_console::log::info!("trace: not implemented");
-            -1
+    #[inline]
+    fn trace(
+        &self,
+        caller: Caller,
+        trace_request: usize,
+        id: usize,
+        data: usize,
+    ) -> isize {
+        let tcb = unsafe { &mut *(caller.entity as *mut TaskControlBlock) };
+        match trace_request {
+            0 => unsafe { *(id as *const u8) as isize },
+            1 => {
+                unsafe {
+                    *(id as *mut u8) = data as u8;
+                }
+                0
+            }
+            2 => tcb.syscall_times(id) as isize,
+            _ => -1,
         }
     }
+}
+
 }
 
 /// 非 RISC-V64 架构的占位模块。
