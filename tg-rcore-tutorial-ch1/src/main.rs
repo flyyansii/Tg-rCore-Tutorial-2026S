@@ -24,9 +24,45 @@
 // 非 RISC-V64 架构允许死代码（用于 cargo publish --dry-run 在主机上通过编译）
 #![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
+
 // 引入 SBI 调用库，提供 console_putchar（输出字符）和 shutdown（关机）功能
 // 启用 nobios 特性后，tg_sbi 内建了 M-mode 启动代码，无需外部 SBI 固件
 use tg_sbi::{console_putchar, shutdown};
+
+mod graphics;
+
+struct BumpAllocator {
+    heap: UnsafeCell<[u8; 1024 * 1024]>,
+    next: UnsafeCell<usize>,
+}
+
+unsafe impl Sync for BumpAllocator {}
+
+#[global_allocator]
+static ALLOCATOR: BumpAllocator = BumpAllocator {
+    heap: UnsafeCell::new([0; 1024 * 1024]),
+    next: UnsafeCell::new(0),
+};
+
+unsafe impl GlobalAlloc for BumpAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let align = layout.align();
+        let size = layout.size();
+        let next = unsafe { &mut *self.next.get() };
+        let start = (*next + align - 1) & !(align - 1);
+        let end = start + size;
+        if end > 1024 * 1024 {
+            core::ptr::null_mut()
+        } else {
+            *next = end;
+            unsafe { (&mut *self.heap.get()).as_mut_ptr().add(start) }
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
 
 /// S 态程序入口点。
 ///
@@ -43,7 +79,7 @@ use tg_sbi::{console_putchar, shutdown};
 #[unsafe(link_section = ".text.entry")]
 unsafe extern "C" fn _start() -> ! {
     // 栈大小：4 KiB
-    const STACK_SIZE: usize = 4096;
+    const STACK_SIZE: usize = 131072;
 
     // 在 .bss.uninit 段中分配栈空间
     #[unsafe(link_section = ".bss.uninit")]
@@ -66,7 +102,10 @@ extern "C" fn rust_main() -> ! {
     for c in b"Hello, world!\n" {
         console_putchar(*c);
     }
-    shutdown(false) // false 表示正常关机
+    graphics::demo();
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// panic 处理函数。
