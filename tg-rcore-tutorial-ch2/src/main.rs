@@ -181,6 +181,9 @@ extern "C" fn rust_main() -> ! {
     }
 
     graphics::demo(completed_apps);
+    #[cfg(feature = "ci")]
+    tg_sbi::shutdown(false);
+    #[cfg(not(feature = "ci"))]
     loop {
         core::hint::spin_loop();
     }

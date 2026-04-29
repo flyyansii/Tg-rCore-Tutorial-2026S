@@ -215,6 +215,20 @@ doc/ch2/ch2-moving-tangram-demo.gif
   test：跑完后 shutdown(false)，适合 checker。
 ```
 
+当前已经补充了 `ci` feature：
+
+```text
+普通 cargo run：
+  走图形 runner，显示 moving tangram，最后 spin_loop 保留窗口。
+
+test.sh / GitHub Actions：
+  cargo build --features ci
+  qemu-system-riscv64 -nographic ...
+  跑完后 shutdown(false)，自动退出，适合 checker。
+```
+
+这样同一份代码同时保留了展示模式和自动测试模式，不需要为了 CI 删除图形 demo。
+
 ## 八、AI 协作总结
 
 这次 AI 协作不是简单“让 AI 写代码”，而是用 AI 做三个层面的辅助：

@@ -1,45 +1,42 @@
 #!/bin/bash
-# ch2 测试脚本
 
-set -e
+set -euo pipefail
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-# 检查并安装 tg-rcore-tutorial-checker
 ensure_tg_checker() {
     if ! command -v tg-rcore-tutorial-checker &> /dev/null; then
-        echo -e "${YELLOW}tg-rcore-tutorial-checker 未安装，正在安装...${NC}"
-        if cargo install tg-rcore-tutorial-checker; then
-            echo -e "${GREEN}✓ tg-rcore-tutorial-checker 安装成功${NC}"
-        else
-            echo -e "${RED}✗ tg-rcore-tutorial-checker 安装失败${NC}"
-            exit 1
-        fi
+        echo -e "${YELLOW}tg-rcore-tutorial-checker not installed, installing...${NC}"
+        cargo install tg-rcore-tutorial-checker
     fi
 }
 
 ensure_tg_checker
 
-echo "运行 ch2 基础测试..."
-echo -e "${YELLOW}────────── cargo run 输出 ──────────${NC}"
+echo "Running ch2 base tests in CI-friendly nographic mode..."
+echo -e "${YELLOW}────────── cargo build --features ci ──────────${NC}"
+cargo build --features ci
 
-# 使用 tee 将 cargo run 的输出同时显示在终端和传递给 tg-rcore-tutorial-checker
-# - cargo run 2>&1：合并 stdout 和 stderr（包含编译信息和运行输出）
-# - tee /dev/stderr：将输出复制一份到 stderr（显示在终端），原始流继续通过管道
-# - tg-rcore-tutorial-checker --ch 2：接收管道中的输出进行检查
-# 使用 pipefail 确保管道中任意命令失败都能被捕获
+KERNEL="target/riscv64gc-unknown-none-elf/debug/tg-rcore-tutorial-ch2"
+
+echo -e "${YELLOW}────────── qemu output ──────────${NC}"
 set -o pipefail
-if cargo run 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 2; then
+if qemu-system-riscv64 \
+    -machine virt \
+    -nographic \
+    -bios none \
+    -kernel "$KERNEL" \
+    2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 2; then
     echo ""
-    echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
-    echo -e "${GREEN}✓ ch2 基础测试通过${NC}"
+    echo -e "${YELLOW}────────── Test result ──────────${NC}"
+    echo -e "${GREEN}✓ ch2 base tests passed${NC}"
     exit 0
 else
     echo ""
-    echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
-    echo -e "${RED}✗ ch2 基础测试失败${NC}"
+    echo -e "${YELLOW}────────── Test result ──────────${NC}"
+    echo -e "${RED}✗ ch2 base tests failed${NC}"
     exit 1
 fi
