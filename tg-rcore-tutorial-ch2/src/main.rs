@@ -30,6 +30,8 @@
 #[macro_use]
 extern crate tg_console;
 
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
 // 本地模块：Console 和 SyscallContext 的实现
 use impls::{Console, SyscallContext};
 // riscv 库：访问 RISC-V 控制状态寄存器（CSR），如 scause
@@ -42,6 +44,39 @@ use tg_kernel_context::LocalContext;
 use tg_sbi;
 // 系统调用相关：调用者信息、系统调用 ID
 use tg_syscall::{Caller, SyscallId};
+
+mod graphics;
+
+struct BumpAllocator {
+    heap: UnsafeCell<[u8; 1024 * 1024]>,
+    next: UnsafeCell<usize>,
+}
+
+unsafe impl Sync for BumpAllocator {}
+
+#[global_allocator]
+static ALLOCATOR: BumpAllocator = BumpAllocator {
+    heap: UnsafeCell::new([0; 1024 * 1024]),
+    next: UnsafeCell::new(0),
+};
+
+unsafe impl GlobalAlloc for BumpAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let align = layout.align();
+        let size = layout.size();
+        let next = unsafe { &mut *self.next.get() };
+        let start = (*next + align - 1) & !(align - 1);
+        let end = start + size;
+        if end > 1024 * 1024 {
+            core::ptr::null_mut()
+        } else {
+            *next = end;
+            unsafe { (&mut *self.heap.get()).as_mut_ptr().add(start) }
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
 
 // ========== 启动相关 ==========
 
@@ -83,12 +118,16 @@ extern "C" fn rust_main() -> ! {
     tg_console::init_console(&Console);
     tg_console::set_log_level(option_env!("LOG"));
     tg_console::test_log();
+    println!("[ch2] console ready");
 
     // 第三步：初始化系统调用处理（注册 IO 和 Process 的实现）
     tg_syscall::init_io(&SyscallContext);
     tg_syscall::init_process(&SyscallContext);
+    println!("[ch2] syscall ready");
 
     // 第四步：批处理——依次加载并运行每个用户程序
+    let mut completed_apps = 0;
+    println!("[ch2] app meta ready");
     for (i, app) in tg_linker::AppMeta::locate().iter().enumerate() {
         let app_base = app.as_ptr() as usize;
         log::info!("load app{i} to {app_base:#x}");
@@ -137,11 +176,14 @@ extern "C" fn rust_main() -> ! {
         }
         // 防止编译器优化掉 user_stack
         let _ = core::hint::black_box(&user_stack);
+        completed_apps += 1;
         println!();
     }
 
-    // 所有用户程序执行完毕，关机
-    tg_sbi::shutdown(false)
+    graphics::demo(completed_apps);
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 // ========== panic 处理 ==========
