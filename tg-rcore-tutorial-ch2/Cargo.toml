@@ -22,6 +22,9 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+[features]
+ci = []
+
 [dependencies]
 riscv = "0.10.1"
 

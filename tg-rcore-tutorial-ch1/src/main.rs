@@ -103,6 +103,9 @@ extern "C" fn rust_main() -> ! {
         console_putchar(*c);
     }
     graphics::demo();
+    #[cfg(feature = "ci")]
+    shutdown(false);
+    #[cfg(not(feature = "ci"))]
     loop {
         core::hint::spin_loop();
     }

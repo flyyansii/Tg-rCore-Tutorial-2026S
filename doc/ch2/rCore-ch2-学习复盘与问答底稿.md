@@ -156,6 +156,15 @@ app0-app7 能顺序运行
   cargo run --features auto-exit      跑完自动 shutdown
 ```
 
+目前实际采用的是更简单的 `ci` feature：
+
+```text
+普通 cargo run：保留图形窗口。
+test.sh：cargo build --features ci，然后用 qemu -nographic 直接运行内核。
+```
+
+这样 GitHub Actions 不需要 GTK 图形环境，也不会被最后的 `spin_loop` 卡住。
+
 ## 8. 我需要能回答的问题
 
 ### Q1：ch2 和 ch3 的区别是什么？
@@ -193,4 +202,3 @@ OS 原理：批处理、用户态/内核态、syscall。
 ```
 
 这次最重要的收获是：OS 实验里的 bug 不一定是 Rust 语法问题，很多时候是“机器实际怎么执行”和“内存实际怎么摆放”的问题。
-

@@ -18,6 +18,9 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+[features]
+ci = []
+
 [dependencies]
 tg-sbi = { package = "tg-rcore-tutorial-sbi", path = "../tg-rcore-tutorial-sbi", version = "0.4.9", features = ["nobios"] }
 virtio-drivers = "0.1.0"
