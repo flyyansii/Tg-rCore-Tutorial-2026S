@@ -49,6 +49,15 @@ pub fn getchar() -> u8 {
     c[0]
 }
 
+pub fn try_getchar() -> Option<u8> {
+    let mut c = [0u8; 1];
+    if read(STDIN, &mut c) > 0 {
+        Some(c[0])
+    } else {
+        None
+    }
+}
+
 struct Console;
 
 impl tg_console::Console for Console {

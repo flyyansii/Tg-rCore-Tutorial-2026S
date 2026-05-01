@@ -180,6 +180,13 @@ cases = [
     "ch3_trace",
 ]
 
+[ch3_snake]
+base = 0x8040_0000
+step = 0x0020_0000
+cases = [
+    "ch3_snake",
+]
+
 [ch4_exercise]
 cases = [
     "ch3_sleep",

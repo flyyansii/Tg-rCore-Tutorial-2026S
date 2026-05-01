@@ -19,6 +19,7 @@ exclude = [
 [features]
 coop = []
 exercise = []
+snake = []
 
 [profile.dev]
 panic = "abort"
