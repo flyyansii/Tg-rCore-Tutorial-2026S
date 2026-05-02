@@ -27,11 +27,57 @@
 #![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 
 // 任务管理模块：定义任务控制块（TCB）和调度事件
+#[cfg(any(feature = "snake", feature = "snake-ci"))]
+mod graphics;
+#[cfg(any(feature = "snake", feature = "snake-ci"))]
+mod keyboard;
 mod task;
+
+mod input {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const UART_BASE: usize = 0x1000_0000;
+    const UART_LSR: usize = UART_BASE + 5;
+    static LAST_KEY: AtomicUsize = AtomicUsize::new(0);
+
+    fn poll_uart_byte() -> Option<u8> {
+        let lsr = unsafe { (UART_LSR as *const u8).read_volatile() };
+        if lsr & 1 == 0 {
+            None
+        } else {
+            Some(unsafe { (UART_BASE as *const u8).read_volatile() })
+        }
+    }
+
+    pub fn refresh() {
+        #[cfg(any(feature = "snake", feature = "snake-ci"))]
+        crate::keyboard::refresh();
+        if let Some(byte) = poll_uart_byte() {
+            LAST_KEY.store(byte as usize + 1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn take() -> Option<u8> {
+        #[cfg(any(feature = "snake", feature = "snake-ci"))]
+        if let Some(byte) = crate::keyboard::take() {
+            return Some(byte);
+        }
+        refresh();
+        let val = LAST_KEY.swap(0, Ordering::Relaxed);
+        if val == 0 {
+            None
+        } else {
+            Some((val - 1) as u8)
+        }
+    }
+}
 
 // 引入控制台输出宏（print! / println!），由 tg_console 库提供
 #[macro_use]
 extern crate tg_console;
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
 
 // 本地模块：Console 和 SyscallContext 的实现
 use impls::{Console, SyscallContext};
@@ -43,6 +89,38 @@ use task::TaskControlBlock;
 use tg_console::log;
 // SBI 调用：set_timer、console_putchar、shutdown 等
 use tg_sbi;
+
+struct BumpAllocator {
+    heap: UnsafeCell<[u8; 128 * 1024]>,
+    next: UnsafeCell<usize>,
+}
+
+unsafe impl Sync for BumpAllocator {}
+
+#[global_allocator]
+static ALLOCATOR: BumpAllocator = BumpAllocator {
+    heap: UnsafeCell::new([0; 128 * 1024]),
+    next: UnsafeCell::new(0),
+};
+
+unsafe impl GlobalAlloc for BumpAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let align = layout.align();
+        let size = layout.size();
+        let next = unsafe { &mut *self.next.get() };
+        let start = (*next + align - 1) & !(align - 1);
+        let end = start + size;
+        let heap = unsafe { &mut *self.heap.get() };
+        if end > heap.len() {
+            core::ptr::null_mut()
+        } else {
+            *next = end;
+            unsafe { heap.as_mut_ptr().add(start) }
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
 
 // ========== 启动相关 ==========
 
@@ -143,6 +221,7 @@ extern "C" fn rust_main() -> ! {
                     Trap::Interrupt(Interrupt::SupervisorTimer) => {
                         // 清除时钟中断（设置为最大值，避免立即再次触发）
                         tg_sbi::set_timer(u64::MAX);
+                        input::refresh();
                         log::trace!("app{i} timeout");
                         false // 不结束任务，切换到下一个
                     }
@@ -210,8 +289,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// 各依赖库所需接口的具体实现
 mod impls {
-    use tg_syscall::*;
     use crate::task::TaskControlBlock;
+    use tg_syscall::*;
 
     /// 控制台实现：通过 SBI 逐字符输出
     pub struct Console;
@@ -229,8 +308,31 @@ mod impls {
     /// IO 系统调用实现：处理 write 系统调用
     impl IO for SyscallContext {
         #[inline]
+        fn read(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
+            match fd {
+                STDIN => {
+                    if count == 0 {
+                        return 0;
+                    }
+                    if let Some(byte) = crate::input::take() {
+                        unsafe { (buf as *mut u8).write_volatile(byte) };
+                        1
+                    } else {
+                        -2
+                    }
+                }
+                _ => {
+                    tg_console::log::error!("unsupported fd: {fd}");
+                    -1
+                }
+            }
+        }
+
+        #[inline]
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             match fd {
+                #[cfg(any(feature = "snake", feature = "snake-ci"))]
+                crate::graphics::GRAPHICS_FD => crate::graphics::submit_snake_frame(buf, count),
                 // 标准输出和调试输出：将缓冲区内容打印到控制台
                 STDOUT | STDDEBUG => {
                     print!("{}", unsafe {
@@ -274,12 +376,7 @@ mod impls {
     /// QEMU virt 平台的时钟频率为 12.5 MHz（10000/125 = 80 ns/tick）。
     impl Clock for SyscallContext {
         #[inline]
-        fn clock_gettime(
-            &self,
-            _caller: Caller,
-            clock_id: ClockId,
-            tp: usize,
-        ) -> isize {
+        fn clock_gettime(&self, _caller: Caller, clock_id: ClockId, tp: usize) -> isize {
             match clock_id {
                 ClockId::CLOCK_MONOTONIC => {
                     // 将 RISC-V time 寄存器的值转换为纳秒
@@ -303,29 +400,22 @@ mod impls {
     /// - 写入用户内存（trace_request=1）
     /// - 查询系统调用计数（trace_request=2）
     impl Trace for SyscallContext {
-    #[inline]
-    fn trace(
-        &self,
-        caller: Caller,
-        trace_request: usize,
-        id: usize,
-        data: usize,
-    ) -> isize {
-        let tcb = unsafe { &mut *(caller.entity as *mut TaskControlBlock) };
-        match trace_request {
-            0 => unsafe { *(id as *const u8) as isize },
-            1 => {
-                unsafe {
-                    *(id as *mut u8) = data as u8;
+        #[inline]
+        fn trace(&self, caller: Caller, trace_request: usize, id: usize, data: usize) -> isize {
+            let tcb = unsafe { &mut *(caller.entity as *mut TaskControlBlock) };
+            match trace_request {
+                0 => unsafe { *(id as *const u8) as isize },
+                1 => {
+                    unsafe {
+                        *(id as *mut u8) = data as u8;
+                    }
+                    0
                 }
-                0
+                2 => tcb.syscall_times(id) as isize,
+                _ => -1,
             }
-            2 => tcb.syscall_times(id) as isize,
-            _ => -1,
         }
     }
-}
-
 }
 
 /// 非 RISC-V64 架构的占位模块。

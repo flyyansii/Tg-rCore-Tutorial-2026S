@@ -1,71 +1,55 @@
 #!/bin/bash
-# ch3 测试脚本
-#
-# 用法：
-#   ./test.sh          # 运行全部测试（等价于 ./test.sh all）
-#   ./test.sh base     # 仅运行基础测试
-#   ./test.sh exercise # 仅运行练习测试
-#   ./test.sh all      # 运行基础 + 练习测试
 
 set -e
+set -o pipefail
+
+export CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER="qemu-system-riscv64 -machine virt -display none -serial stdio -device virtio-gpu-device,bus=virtio-mmio-bus.0,xres=800,yres=480 -device virtio-keyboard-device,bus=virtio-mmio-bus.1 -bios none -kernel"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-# 检查并安装 tg-rcore-tutorial-checker
 ensure_tg_checker() {
     if ! command -v tg-rcore-tutorial-checker &> /dev/null; then
-        echo -e "${YELLOW}tg-rcore-tutorial-checker 未安装，正在安装...${NC}"
+        echo -e "${YELLOW}tg-rcore-tutorial-checker is not installed, installing...${NC}"
         if cargo install tg-rcore-tutorial-checker; then
-            echo -e "${GREEN}✓ tg-rcore-tutorial-checker 安装成功${NC}"
+            echo -e "${GREEN}tg-rcore-tutorial-checker installed${NC}"
         else
-            echo -e "${RED}✗ tg-rcore-tutorial-checker 安装失败${NC}"
+            echo -e "${RED}failed to install tg-rcore-tutorial-checker${NC}"
             exit 1
         fi
     fi
 }
 
-ensure_tg_checker
-
-# 使用 pipefail 确保管道中任意命令失败都能被捕获
-set -o pipefail
-
 run_base() {
-    echo "运行 ch3 基础测试..."
-    echo -e "${YELLOW}────────── cargo run 输出 ──────────${NC}"
-
-    # 使用 tee 将 cargo run 的输出同时显示在终端和传递给 tg-rcore-tutorial-checker
-    # - cargo run 2>&1：合并 stdout 和 stderr（包含编译信息和运行输出）
-    # - tee /dev/stderr：将输出复制一份到 stderr（显示在终端），原始流继续通过管道
-    # - tg-rcore-tutorial-checker --ch 3：接收管道中的输出进行检查
+    ensure_tg_checker
+    echo "Running ch3 base tests..."
     if cargo run 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 3; then
-        echo ""
-        echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
-        echo -e "${GREEN}✓ ch3 基础测试通过${NC}"
-        return 0
+        echo -e "${GREEN}ch3 base tests passed${NC}"
     else
-        echo ""
-        echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
-        echo -e "${RED}✗ ch3 基础测试失败${NC}"
+        echo -e "${RED}ch3 base tests failed${NC}"
         return 1
     fi
 }
 
 run_exercise() {
-    echo "运行 ch3 练习测试..."
-    echo -e "${YELLOW}────────── cargo run --features exercise 输出 ──────────${NC}"
-
+    ensure_tg_checker
+    echo "Running ch3 exercise tests..."
     if cargo run --features exercise 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 3 --exercise; then
-        echo ""
-        echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
-        echo -e "${GREEN}✓ ch3 练习测试通过${NC}"
-        return 0
+        echo -e "${GREEN}ch3 exercise tests passed${NC}"
     else
-        echo ""
-        echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
-        echo -e "${RED}✗ ch3 练习测试失败${NC}"
+        echo -e "${RED}ch3 exercise tests failed${NC}"
+        return 1
+    fi
+}
+
+run_snake() {
+    echo "Running ch3 snake demo test..."
+    if cargo run --features snake-ci 2>&1 | tee /dev/stderr | grep -q "Test ch3 snake OK!"; then
+        echo -e "${GREEN}ch3 snake demo test passed${NC}"
+    else
+        echo -e "${RED}ch3 snake demo test failed${NC}"
         return 1
     fi
 }
@@ -77,13 +61,16 @@ case "${1:-all}" in
     exercise)
         run_exercise
         ;;
+    snake)
+        run_snake
+        ;;
     all)
         run_base
         echo ""
         run_exercise
         ;;
     *)
-        echo "用法: $0 [base|exercise|all]"
+        echo "Usage: $0 [base|exercise|snake|all]"
         exit 1
         ;;
 esac

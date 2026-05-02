@@ -18,6 +18,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TG_USER_CRATE");
     println!("cargo:rerun-if-env-changed=TG_USER_LOCAL_DIR");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXERCISE");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SNAKE");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SNAKE_CI");
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
@@ -42,9 +44,8 @@ fn should_skip_build_apps() -> bool {
 
 fn write_linker() {
     let ld = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("linker.ld");
-    fs::write(&ld, tg_linker::NOBIOS_SCRIPT).unwrap_or_else(|err| {
-        panic!("failed to write linker script to {}: {}", ld.display(), err)
-    });
+    fs::write(&ld, tg_linker::NOBIOS_SCRIPT)
+        .unwrap_or_else(|err| panic!("failed to write linker script to {}: {}", ld.display(), err));
     println!("cargo:rustc-link-arg=-T{}", ld.display());
 }
 
@@ -65,17 +66,30 @@ fn build_apps() {
     let tg_user_root = ensure_tg_user();
     let cases_path = tg_user_root.join("cases.toml");
     println!("cargo:rerun-if-changed={}", cases_path.display());
-    println!("cargo:rerun-if-changed={}", tg_user_root.join("Cargo.toml").display());
-    println!("cargo:rerun-if-changed={}", tg_user_root.join("src").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        tg_user_root.join("Cargo.toml").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        tg_user_root.join("src").display()
+    );
 
     let cfg = fs::read_to_string(&cases_path).unwrap_or_else(|err| {
-        panic!("failed to read cases.toml from {}: {}", cases_path.display(), err)
+        panic!(
+            "failed to read cases.toml from {}: {}",
+            cases_path.display(),
+            err
+        )
     });
-    let mut cases_map: HashMap<String, Cases> = toml::from_str(&cfg).unwrap_or_else(|err| {
-        panic!("failed to parse cases.toml: {err}")
-    });
+    let mut cases_map: HashMap<String, Cases> =
+        toml::from_str(&cfg).unwrap_or_else(|err| panic!("failed to parse cases.toml: {err}"));
 
-    let case_key = if env::var("CARGO_FEATURE_EXERCISE").is_ok() {
+    let case_key = if env::var("CARGO_FEATURE_SNAKE_CI").is_ok() {
+        "ch3_snake_ci"
+    } else if env::var("CARGO_FEATURE_SNAKE").is_ok() {
+        "ch3_snake"
+    } else if env::var("CARGO_FEATURE_EXERCISE").is_ok() {
         "ch3_exercise"
     } else {
         "ch3"
@@ -86,7 +100,10 @@ fn build_apps() {
     let names = cases.cases.unwrap_or_default();
 
     if names.is_empty() {
-        panic!("no user cases found for {case_key} in {}", cases_path.display());
+        panic!(
+            "no user cases found for {case_key} in {}",
+            cases_path.display()
+        );
     }
 
     let target_dir = tg_user_root.join("target").join(TARGET_ARCH).join("debug");
@@ -126,7 +143,9 @@ fn build_user_app(tg_user_root: &PathBuf, name: &str, base_address: u64) {
         cmd.env("BASE_ADDRESS", base_address.to_string());
     }
 
-    let status = cmd.status().expect("failed to execute cargo build for user app");
+    let status = cmd
+        .status()
+        .expect("failed to execute cargo build for user app");
     if !status.success() {
         panic!("failed to build user app {name}");
     }
@@ -276,9 +295,15 @@ fn ensure_workspace_table(dir: &PathBuf) {
     let cargo_toml = dir.join("Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
     if !content.contains("[workspace]") {
-        fs::write(&cargo_toml, format!("{}
+        fs::write(
+            &cargo_toml,
+            format!(
+                "{}
 [workspace]
-", content))
-            .unwrap_or_else(|err| panic!("failed to patch Cargo.toml in {}: {}", dir.display(), err));
+",
+                content
+            ),
+        )
+        .unwrap_or_else(|err| panic!("failed to patch Cargo.toml in {}: {}", dir.display(), err));
     }
 }
