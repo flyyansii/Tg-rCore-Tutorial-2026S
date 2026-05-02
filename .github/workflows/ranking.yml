@@ -5,6 +5,10 @@ on: [push]
 env:
   CARGO_TERM_COLOR: always
   NO_COLOR: 1
+  # GitHub-hosted runners are outside mainland China; the container defaults to
+  # rsproxy.cn, which can timeout before tests even start.
+  RUSTUP_DIST_SERVER: https://static.rust-lang.org
+  RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
 
 jobs:
   # ──────────────────────────────────────────────
