@@ -19,6 +19,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TG_USER_LOCAL_DIR");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXERCISE");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SNAKE");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SNAKE_CI");
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
@@ -84,7 +85,9 @@ fn build_apps() {
     let mut cases_map: HashMap<String, Cases> =
         toml::from_str(&cfg).unwrap_or_else(|err| panic!("failed to parse cases.toml: {err}"));
 
-    let case_key = if env::var("CARGO_FEATURE_SNAKE").is_ok() {
+    let case_key = if env::var("CARGO_FEATURE_SNAKE_CI").is_ok() {
+        "ch3_snake_ci"
+    } else if env::var("CARGO_FEATURE_SNAKE").is_ok() {
         "ch3_snake"
     } else if env::var("CARGO_FEATURE_EXERCISE").is_ok() {
         "ch3_exercise"

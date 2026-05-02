@@ -27,6 +27,10 @@
 #![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 
 // 任务管理模块：定义任务控制块（TCB）和调度事件
+#[cfg(any(feature = "snake", feature = "snake-ci"))]
+mod graphics;
+#[cfg(any(feature = "snake", feature = "snake-ci"))]
+mod keyboard;
 mod task;
 
 mod input {
@@ -46,12 +50,18 @@ mod input {
     }
 
     pub fn refresh() {
+        #[cfg(any(feature = "snake", feature = "snake-ci"))]
+        crate::keyboard::refresh();
         if let Some(byte) = poll_uart_byte() {
             LAST_KEY.store(byte as usize + 1, Ordering::Relaxed);
         }
     }
 
     pub fn take() -> Option<u8> {
+        #[cfg(any(feature = "snake", feature = "snake-ci"))]
+        if let Some(byte) = crate::keyboard::take() {
+            return Some(byte);
+        }
         refresh();
         let val = LAST_KEY.swap(0, Ordering::Relaxed);
         if val == 0 {
@@ -66,6 +76,9 @@ mod input {
 #[macro_use]
 extern crate tg_console;
 
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
+
 // 本地模块：Console 和 SyscallContext 的实现
 use impls::{Console, SyscallContext};
 // riscv 库：访问 RISC-V 控制状态寄存器（CSR），如 scause、sie、time
@@ -76,6 +89,38 @@ use task::TaskControlBlock;
 use tg_console::log;
 // SBI 调用：set_timer、console_putchar、shutdown 等
 use tg_sbi;
+
+struct BumpAllocator {
+    heap: UnsafeCell<[u8; 128 * 1024]>,
+    next: UnsafeCell<usize>,
+}
+
+unsafe impl Sync for BumpAllocator {}
+
+#[global_allocator]
+static ALLOCATOR: BumpAllocator = BumpAllocator {
+    heap: UnsafeCell::new([0; 128 * 1024]),
+    next: UnsafeCell::new(0),
+};
+
+unsafe impl GlobalAlloc for BumpAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let align = layout.align();
+        let size = layout.size();
+        let next = unsafe { &mut *self.next.get() };
+        let start = (*next + align - 1) & !(align - 1);
+        let end = start + size;
+        let heap = unsafe { &mut *self.heap.get() };
+        if end > heap.len() {
+            core::ptr::null_mut()
+        } else {
+            *next = end;
+            unsafe { heap.as_mut_ptr().add(start) }
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
 
 // ========== 启动相关 ==========
 
@@ -286,6 +331,8 @@ mod impls {
         #[inline]
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             match fd {
+                #[cfg(any(feature = "snake", feature = "snake-ci"))]
+                crate::graphics::GRAPHICS_FD => crate::graphics::submit_snake_frame(buf, count),
                 // 标准输出和调试输出：将缓冲区内容打印到控制台
                 STDOUT | STDDEBUG => {
                     print!("{}", unsafe {

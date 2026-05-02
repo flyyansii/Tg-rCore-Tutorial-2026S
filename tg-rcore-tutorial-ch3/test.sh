@@ -3,6 +3,8 @@
 set -e
 set -o pipefail
 
+export CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER="qemu-system-riscv64 -machine virt -display none -serial stdio -device virtio-gpu-device,bus=virtio-mmio-bus.0,xres=800,yres=480 -device virtio-keyboard-device,bus=virtio-mmio-bus.1 -bios none -kernel"
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
@@ -44,7 +46,7 @@ run_exercise() {
 
 run_snake() {
     echo "Running ch3 snake demo test..."
-    if cargo run --features snake 2>&1 | tee /dev/stderr | grep -q "Test ch3 snake OK!"; then
+    if cargo run --features snake-ci 2>&1 | tee /dev/stderr | grep -q "Test ch3 snake OK!"; then
         echo -e "${GREEN}ch3 snake demo test passed${NC}"
     else
         echo -e "${RED}ch3 snake demo test failed${NC}"

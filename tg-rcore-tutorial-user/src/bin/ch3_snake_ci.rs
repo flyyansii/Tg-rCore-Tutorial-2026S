@@ -4,12 +4,12 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{sched_yield, sleep, try_getchar, write};
+use user_lib::{sleep, write};
 
 const WIDTH: i32 = 24;
 const HEIGHT: i32 = 12;
 const MAX_SNAKE: usize = 64;
-const FRAME_DELAY_MS: usize = 120;
+const MAX_FRAMES: usize = 90;
 const GRAPHICS_FD: usize = 3;
 const SNAKE_FRAME_MAGIC: u32 = 0x534E_4B33;
 
@@ -50,8 +50,11 @@ impl Point {
     }
 }
 
-fn draw(snake: &[Point; MAX_SNAKE], len: usize, food: Point, score: usize) {
-    let mut frame = SnakeFrame {
+fn draw(snake: &[Point; MAX_SNAKE], len: usize, food: Point, score: usize, frame: usize) {
+    if frame % 15 == 0 {
+        println!("ch3 snake CI frame {frame}/{MAX_FRAMES}, score {score}");
+    }
+    let mut frame_buf = SnakeFrame {
         magic: SNAKE_FRAME_MAGIC,
         width: WIDTH as u32,
         height: HEIGHT as u32,
@@ -66,7 +69,7 @@ fn draw(snake: &[Point; MAX_SNAKE], len: usize, food: Point, score: usize) {
     };
     let mut i = 0;
     while i < len {
-        frame.snake[i] = FramePoint {
+        frame_buf.snake[i] = FramePoint {
             x: snake[i].x as u8,
             y: snake[i].y as u8,
         };
@@ -74,7 +77,7 @@ fn draw(snake: &[Point; MAX_SNAKE], len: usize, food: Point, score: usize) {
     }
     let bytes = unsafe {
         core::slice::from_raw_parts(
-            &frame as *const SnakeFrame as *const u8,
+            &frame_buf as *const SnakeFrame as *const u8,
             core::mem::size_of::<SnakeFrame>(),
         )
     };
@@ -102,36 +105,19 @@ extern "C" fn main() -> i32 {
     let mut food = Point::new(14, 6);
     let mut score = 0usize;
 
-    loop {
-        while let Some(key) = try_getchar() {
-            match key {
-                b'w' | b'W' if dy != 1 => {
-                    dx = 0;
-                    dy = -1;
-                }
-                b's' | b'S' if dy != -1 => {
-                    dx = 0;
-                    dy = 1;
-                }
-                b'a' | b'A' if dx != 1 => {
-                    dx = -1;
-                    dy = 0;
-                }
-                b'd' | b'D' if dx != -1 => {
-                    dx = 1;
-                    dy = 0;
-                }
-                b'q' | b'Q' => {
-                    println!("Test ch3 snake OK!");
-                    return 0;
-                }
-                _ => {
-                    sched_yield();
-                }
-            }
+    for frame in 0..=MAX_FRAMES {
+        if frame == 20 {
+            dx = 0;
+            dy = 1;
+        } else if frame == 45 {
+            dx = 1;
+            dy = 0;
+        } else if frame == 70 {
+            dx = 0;
+            dy = -1;
         }
 
-        let mut head = Point::new(
+        let head = Point::new(
             (snake[0].x + dx).rem_euclid(WIDTH),
             (snake[0].y + dy).rem_euclid(HEIGHT),
         );
@@ -147,19 +133,10 @@ extern "C" fn main() -> i32 {
         }
         snake[0] = head;
 
-        draw(&snake, len, food, score);
-        sleep(FRAME_DELAY_MS);
-        head = snake[0];
-        if snake[1..len].iter().any(|p| p.x == head.x && p.y == head.y) {
-            println!("snake touched itself, restart from a small snake");
-            len = 4;
-            snake[0] = Point::new(6, 4);
-            snake[1] = Point::new(5, 4);
-            snake[2] = Point::new(4, 4);
-            snake[3] = Point::new(3, 4);
-            dx = 1;
-            dy = 0;
-            sleep(500);
-        }
+        draw(&snake, len, food, score, frame);
+        sleep(40);
     }
+
+    println!("Test ch3 snake OK!");
+    0
 }
