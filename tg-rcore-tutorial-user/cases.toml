@@ -208,6 +208,11 @@ cases = [
     "ch4_trace",
 ]
 
+[ch4_tetris]
+cases = [
+    "ch4_tetris",
+]
+
 [ch5_exercise]
 cases = [
     "00hello_world",
