@@ -28,7 +28,51 @@
 #![cfg_attr(not(target_arch = "riscv64"), allow(dead_code, unused_imports))]
 
 // 进程管理模块：定义 Process 结构体，包含地址空间和上下文
+mod graphics;
+mod keyboard;
 mod process;
+
+mod input {
+    //! Minimal UART polling input for the terminal Tetris demo.
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const UART_BASE: usize = 0x1000_0000;
+    const UART_LSR: usize = UART_BASE + 5;
+
+    static LAST_KEY: AtomicUsize = AtomicUsize::new(0);
+
+    fn poll_uart_byte() -> Option<u8> {
+        let lsr = unsafe { (UART_LSR as *const u8).read_volatile() };
+        if lsr & 1 == 0 {
+            None
+        } else {
+            Some(unsafe { (UART_BASE as *const u8).read_volatile() })
+        }
+    }
+
+    /// Poll one byte from UART into the one-byte input buffer if available.
+    pub fn refresh() {
+        crate::keyboard::refresh();
+        if let Some(byte) = poll_uart_byte() {
+            LAST_KEY.store(byte as usize + 1, Ordering::Relaxed);
+        }
+    }
+
+    /// Take the latest buffered input byte, returning `None` when no key was pressed.
+    pub fn take() -> Option<u8> {
+        if let Some(byte) = crate::keyboard::take() {
+            return Some(byte);
+        }
+        refresh();
+        let val = LAST_KEY.swap(0, Ordering::Relaxed);
+        if val == 0 {
+            None
+        } else {
+            Some((val - 1) as u8)
+        }
+    }
+}
 
 // 引入控制台输出宏（print! / println!），由 tg_console 库提供
 #[macro_use]
@@ -62,7 +106,6 @@ use tg_kernel_vm::{
 };
 use tg_sbi;
 use tg_syscall::Caller;
-use xmas_elf::ElfFile;
 
 // ========== 辅助函数 ==========
 
@@ -159,12 +202,15 @@ extern "C" fn rust_main() -> ! {
     tg_console::set_log_level(option_env!("LOG"));
     tg_console::test_log();
     // 第三步：初始化内核堆分配器
-    // 堆的起始地址为内核镜像起始处，可用内存为内核镜像之后到物理内存末尾
-    tg_kernel_alloc::init(layout.start() as _);
+    // Heap pages are handed to the buddy allocator from a page-aligned address.
+    const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
+    let heap_start = (layout.end() + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let memory_end = layout.start() + MEMORY;
+    tg_kernel_alloc::init(heap_start as _);
     unsafe {
         tg_kernel_alloc::transfer(core::slice::from_raw_parts_mut(
-            layout.end() as _,
-            MEMORY - layout.len(),
+            heap_start as _,
+            memory_end - heap_start,
         ))
     };
     // 第四步：分配异界传送门的物理页面
@@ -178,10 +224,8 @@ extern "C" fn rust_main() -> ! {
     let portal_idx = PROTAL_TRANSIT.index_in(Sv39::MAX_LEVEL);
     // 第六步：加载用户程序
     // 解析每个 ELF 文件，创建独立地址空间，映射传送门
-    for (i, elf) in tg_linker::AppMeta::locate().iter().enumerate() {
-        let base = elf.as_ptr() as usize;
-        log::info!("detect app[{i}]: {base:#x}..{:#x}", base + elf.len());
-        if let Some(process) = Process::new(ElfFile::new(elf).unwrap()) {
+    for elf in tg_linker::AppMeta::locate().iter() {
+        if let Some(process) = Process::new(elf) {
             // 将内核传送门页表项共享到用户地址空间
             // 这样传送门在两个地址空间的虚拟地址相同
             process.address_space.root()[portal_idx] = ks.root()[portal_idx];
@@ -191,8 +235,8 @@ extern "C" fn rust_main() -> ! {
 
     // 第七步：建立调度栈（映射到内核地址空间的高地址区域）
     const PAGE: Layout =
-        unsafe { Layout::from_size_align_unchecked(2 << Sv39::PAGE_BITS, 1 << Sv39::PAGE_BITS) };
-    let pages = 2;
+        unsafe { Layout::from_size_align_unchecked(16 << Sv39::PAGE_BITS, 1 << Sv39::PAGE_BITS) };
+    let pages = 16;
     let stack = unsafe { alloc(PAGE) };
     ks.map_extern(
         VPN::new((1 << 26) - pages)..VPN::new(1 << 26),
@@ -232,13 +276,13 @@ extern "C" fn schedule() -> ! {
 
     // 调度循环：持续执行直到所有进程完成
     while !unsafe { PROCESSES.get_mut().is_empty() } {
-        let ctx = unsafe { &mut PROCESSES.get_mut()[0].context };
+        let user_context = unsafe { &mut PROCESSES.get_mut()[0].context };
         // 通过传送门执行用户进程：
         // 1. 跳转到传送门页面
         // 2. 在传送门内切换 satp 到用户地址空间
         // 3. 恢复用户寄存器，执行 sret 进入 U-mode
         // 4. 用户触发 Trap 后，传送门切换回内核地址空间
-        unsafe { ctx.execute(portal, ()) };
+        unsafe { user_context.execute(portal, ()) };
 
         // 处理 Trap
         match scause::read().cause() {
@@ -246,8 +290,13 @@ extern "C" fn schedule() -> ! {
             scause::Trap::Exception(scause::Exception::UserEnvCall) => {
                 use tg_syscall::{SyscallId as Id, SyscallResult as Ret};
 
-                let ctx = &mut ctx.context;
-                let id: Id = ctx.a(7).into();
+                let process = unsafe { &mut PROCESSES.get_mut()[0] };
+                let ctx = &mut process.context.context;
+                let syscall_id = ctx.a(7);
+                if syscall_id < process.syscall_count.len() {
+                    process.syscall_count[syscall_id] += 1;
+                }
+                let id: Id = syscall_id.into();
                 let args = [ctx.a(0), ctx.a(1), ctx.a(2), ctx.a(3), ctx.a(4), ctx.a(5)];
                 match tg_syscall::handle(Caller { entity: 0, flow: 0 }, id, args) {
                     Ret::Done(ret) => match id {
@@ -270,10 +319,11 @@ extern "C" fn schedule() -> ! {
             }
             // ─── 其他异常/中断：杀死进程 ───
             e => {
+                let pc = unsafe { PROCESSES.get_mut()[0].context.context.pc() };
                 log::error!(
                     "unsupported trap: {e:?}, stval = {:#x}, sepc = {:#x}",
                     stval::read(),
-                    ctx.context.pc()
+                    pc
                 );
                 unsafe { PROCESSES.get_mut().remove(0) };
             }
@@ -336,6 +386,14 @@ fn kernel_space(
         PPN::new(s.floor().val()),
         build_flags("_WRV"),
     );
+    // Map QEMU virt MMIO devices used by this demo:
+    // UART 0x1000_0000, VirtIO-GPU 0x1000_1000, VirtIO-keyboard 0x1000_2000.
+    let s = VPN::<Sv39>::new(0x1000_0000 >> Sv39::PAGE_BITS);
+    space.map_extern(
+        s..s + 3,
+        PPN::new(0x1000_0000 >> Sv39::PAGE_BITS),
+        build_flags("_WRV"),
+    );
     // 映射异界传送门到虚拟地址空间最高页
     // 标志位 "__G_XWRV" 表示全局、可执行、可读写、有效
     space.map_extern(
@@ -356,7 +414,7 @@ fn kernel_space(
 /// 与前几章不同，本章的系统调用实现需要进行**地址翻译**：
 /// 用户传入的指针是虚拟地址，内核需要通过页表将其翻译为物理地址才能访问。
 mod impls {
-    use crate::{build_flags, Sv39, PROCESSES};
+    use crate::{build_flags, parse_flags, Sv39, PROCESSES};
     use alloc::alloc::alloc_zeroed;
     use core::{alloc::Layout, ptr::NonNull};
     use tg_console::log;
@@ -454,13 +512,82 @@ mod impls {
     /// 系统调用上下文实现
     pub struct SyscallContext;
 
+    fn mapped(process: &crate::Process, vpn: VPN<Sv39>) -> bool {
+        const VALID: VmFlags<Sv39> = build_flags("V");
+        process
+            .address_space
+            .translate::<u8>(vpn.base(), VALID)
+            .is_some()
+    }
+
+    fn prot_to_flags(prot: i32) -> Option<VmFlags<Sv39>> {
+        if prot <= 0 || (prot & !0x7) != 0 {
+            return None;
+        }
+        let mut flags: [u8; 5] = *b"U___V";
+        if prot & 0x4 != 0 {
+            flags[1] = b'X';
+        }
+        if prot & 0x2 != 0 {
+            flags[2] = b'W';
+        }
+        if prot & 0x1 != 0 {
+            flags[3] = b'R';
+        }
+        parse_flags(unsafe { core::str::from_utf8_unchecked(&flags) }).ok()
+    }
+
     /// IO 系统调用实现
     ///
     /// **与前几章的关键区别**：用户传入的 `buf` 是虚拟地址，
     /// 需要通过 `address_space.translate()` 翻译为物理地址才能访问。
     impl IO for SyscallContext {
+        fn read(&self, caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
+            match fd {
+                STDIN => {
+                    if count == 0 {
+                        return 0;
+                    }
+                    const WRITABLE: VmFlags<Sv39> = build_flags("W_V");
+                    let Some(ptr) = (unsafe { PROCESSES.get_mut() })
+                        .get_mut(caller.entity)
+                        .unwrap()
+                        .address_space
+                        .translate::<u8>(VAddr::new(buf), WRITABLE)
+                    else {
+                        log::error!("stdin buffer not writable");
+                        return -1;
+                    };
+                    if let Some(byte) = crate::input::take() {
+                        unsafe { ptr.as_ptr().write_volatile(byte) };
+                        1
+                    } else {
+                        -2
+                    }
+                }
+                _ => {
+                    log::error!("unsupported fd: {fd}");
+                    -1
+                }
+            }
+        }
+
         fn write(&self, caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             match fd {
+                crate::graphics::GRAPHICS_FD => {
+                    const READABLE: VmFlags<Sv39> = build_flags("RV");
+                    if let Some(ptr) = unsafe { PROCESSES.get_mut() }
+                        .get_mut(caller.entity)
+                        .unwrap()
+                        .address_space
+                        .translate::<u8>(VAddr::new(buf), READABLE)
+                    {
+                        crate::graphics::submit_tetris_frame(ptr.as_ptr() as usize, count)
+                    } else {
+                        log::error!("graphics frame ptr not readable");
+                        -1
+                    }
+                }
                 STDOUT | STDDEBUG => {
                     // 检查用户地址是否可读
                     const READABLE: VmFlags<Sv39> = build_flags("RV");
@@ -565,13 +692,37 @@ mod impls {
         #[inline]
         fn trace(
             &self,
-            _caller: Caller,
-            _trace_request: usize,
-            _id: usize,
-            _data: usize,
+            caller: Caller,
+            trace_request: usize,
+            id: usize,
+            data: usize,
         ) -> isize {
-            tg_console::log::info!("trace: not implemented");
-            -1
+            let Some(process) = (unsafe { PROCESSES.get_mut() }).get_mut(caller.entity) else {
+                return -1;
+            };
+            match trace_request {
+                0 => {
+                    const READABLE: VmFlags<Sv39> = build_flags("U_RV");
+                    process
+                        .address_space
+                        .translate::<u8>(VAddr::new(id), READABLE)
+                        .map(|ptr| unsafe { ptr.as_ptr().read_volatile() as isize })
+                        .unwrap_or(-1)
+                }
+                1 => {
+                    const WRITABLE: VmFlags<Sv39> = build_flags("U_WV");
+                    let Some(ptr) = process
+                        .address_space
+                        .translate::<u8>(VAddr::new(id), WRITABLE)
+                    else {
+                        return -1;
+                    };
+                    unsafe { ptr.as_ptr().write_volatile(data as u8) };
+                    0
+                }
+                2 => process.syscall_count.get(id).copied().unwrap_or(0) as isize,
+                _ => -1,
+            }
         }
     }
 
@@ -582,7 +733,7 @@ mod impls {
     impl Memory for SyscallContext {
         fn mmap(
             &self,
-            _caller: Caller,
+            caller: Caller,
             addr: usize,
             len: usize,
             prot: i32,
@@ -590,15 +741,60 @@ mod impls {
             _fd: i32,
             _offset: usize,
         ) -> isize {
-            tg_console::log::info!(
-                "mmap: addr = {addr:#x}, len = {len}, prot = {prot}, not implemented"
-            );
-            -1
+            const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
+            if addr & (PAGE_SIZE - 1) != 0 {
+                return -1;
+            }
+            let Some(flags) = prot_to_flags(prot) else {
+                return -1;
+            };
+            if len == 0 {
+                return 0;
+            }
+            let Some(end_addr) = addr.checked_add(len) else {
+                return -1;
+            };
+            let start = VAddr::<Sv39>::new(addr).floor();
+            let end = VAddr::<Sv39>::new(end_addr).ceil();
+            let Some(process) = (unsafe { PROCESSES.get_mut() }).get_mut(caller.entity) else {
+                return -1;
+            };
+            let mut vpn = start;
+            while vpn < end {
+                if mapped(process, vpn) {
+                    return -1;
+                }
+                vpn = vpn + 1;
+            }
+            process.address_space.map(start..end, &[], 0, flags);
+            0
         }
 
-        fn munmap(&self, _caller: Caller, addr: usize, len: usize) -> isize {
-            tg_console::log::info!("munmap: addr = {addr:#x}, len = {len}, not implemented");
-            -1
+        fn munmap(&self, caller: Caller, addr: usize, len: usize) -> isize {
+            const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
+            if addr & (PAGE_SIZE - 1) != 0 {
+                return -1;
+            }
+            if len == 0 {
+                return 0;
+            }
+            let Some(end_addr) = addr.checked_add(len) else {
+                return -1;
+            };
+            let start = VAddr::<Sv39>::new(addr).floor();
+            let end = VAddr::<Sv39>::new(end_addr).ceil();
+            let Some(process) = (unsafe { PROCESSES.get_mut() }).get_mut(caller.entity) else {
+                return -1;
+            };
+            let mut vpn = start;
+            while vpn < end {
+                if !mapped(process, vpn) {
+                    return -1;
+                }
+                vpn = vpn + 1;
+            }
+            process.address_space.unmap(start..end);
+            0
         }
     }
 }

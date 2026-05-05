@@ -22,16 +22,37 @@
 use crate::{build_flags, parse_flags, Sv39, Sv39Manager};
 use alloc::alloc::alloc_zeroed;
 use core::alloc::Layout;
-use tg_console::log;
 use tg_kernel_context::{foreign::ForeignContext, LocalContext};
 use tg_kernel_vm::{
     page_table::{MmuMeta, VAddr, PPN, VPN},
     AddressSpace,
 };
-use xmas_elf::{
-    header::{self, HeaderPt2, Machine},
-    program, ElfFile,
-};
+const PT_LOAD: u32 = 1;
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+const PF_R: u32 = 4;
+
+fn read_u16(input: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(input.get(offset..offset + 2)?.try_into().ok()?))
+}
+
+fn read_u32(input: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(input.get(offset..offset + 4)?.try_into().ok()?))
+}
+
+fn read_u64(input: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(input.get(offset..offset + 8)?.try_into().ok()?))
+}
+
+fn elf64_entry(input: &[u8]) -> Option<usize> {
+    if input.len() < 32 || input.get(0..4) != Some(b"\x7fELF") {
+        return None;
+    }
+    if input[4] != 2 || input[5] != 1 {
+        return None;
+    }
+    Some(u64::from_le_bytes(input[24..32].try_into().ok()?) as usize)
+}
 
 /// 进程结构体
 ///
@@ -49,6 +70,8 @@ pub struct Process {
     pub heap_bottom: usize,
     /// 当前程序 break 位置（堆顶）
     pub program_brk: usize,
+    /// Per-process syscall counters used by the `trace` exercise syscall.
+    pub syscall_count: [usize; 512],
 }
 
 impl Process {
@@ -60,17 +83,12 @@ impl Process {
     /// 3. 解析 ELF 的 LOAD 段，映射到地址空间（带权限标志）
     /// 4. 分配用户栈（2 页 = 8 KiB），映射到高地址区域
     /// 5. 创建 ForeignContext，设置入口地址和 satp
-    pub fn new(elf: ElfFile) -> Option<Self> {
+    pub fn new(elf: &[u8]) -> Option<Self> {
         // 验证 ELF 头：必须是 RISC-V 64 位可执行文件
-        let entry = match elf.header.pt2 {
-            HeaderPt2::Header64(pt2)
-                if pt2.type_.as_type() == header::Type::Executable
-                    && pt2.machine.as_machine() == Machine::RISC_V =>
-            {
-                pt2.entry_point as usize
-            }
-            _ => None?,
-        };
+        let entry = elf64_entry(elf)?;
+        let phoff = read_u64(elf, 32)? as usize;
+        let phentsize = read_u16(elf, 54)? as usize;
+        let phnum = read_u16(elf, 56)? as usize;
 
         const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
         const PAGE_MASK: usize = PAGE_SIZE - 1;
@@ -79,15 +97,22 @@ impl Process {
         let mut max_end_va: usize = 0;
 
         // 遍历 ELF 的 LOAD 段，映射到地址空间
-        for program in elf.program_iter() {
-            if !matches!(program.get_type(), Ok(program::Type::Load)) {
+        let mut i = 0;
+        while i < phnum {
+            let ph = phoff + i * phentsize;
+            i += 1;
+
+            let p_type = read_u32(elf, ph)?;
+            if p_type != PT_LOAD {
                 continue;
             }
+            let p_flags = read_u32(elf, ph + 4)?;
+            let off_file = read_u64(elf, ph + 8)? as usize;
+            let off_mem = read_u64(elf, ph + 16)? as usize;
+            let len_file = read_u64(elf, ph + 32)? as usize;
+            let len_mem = read_u64(elf, ph + 40)? as usize;
 
-            let off_file = program.offset() as usize; // 文件中的偏移
-            let len_file = program.file_size() as usize; // 文件中的大小
-            let off_mem = program.virtual_addr() as usize; // 映射到的虚拟地址
-            let end_mem = off_mem + program.mem_size() as usize; // 虚拟地址结束
+            let end_mem = off_mem + len_mem; // 虚拟地址结束
             assert_eq!(off_file & PAGE_MASK, off_mem & PAGE_MASK);
 
             // 记录最高虚拟地址（用于确定堆底）
@@ -98,19 +123,19 @@ impl Process {
             // 根据 ELF 段的权限标志构建页表项权限
             // U = 用户态可访问（必须设置）
             let mut flags: [u8; 5] = *b"U___V";
-            if program.flags().is_execute() {
+            if p_flags & PF_X != 0 {
                 flags[1] = b'X';
             }
-            if program.flags().is_write() {
+            if p_flags & PF_W != 0 {
                 flags[2] = b'W';
             }
-            if program.flags().is_read() {
+            if p_flags & PF_R != 0 {
                 flags[3] = b'R';
             }
             // 将 ELF 段的数据映射到地址空间
             address_space.map(
                 VAddr::new(off_mem).floor()..VAddr::new(end_mem).ceil(),
-                &elf.input[off_file..][..len_file],
+                elf.get(off_file..off_file + len_file)?,
                 off_mem & PAGE_MASK,
                 parse_flags(unsafe { core::str::from_utf8_unchecked(&flags) }).unwrap(),
             );
@@ -133,12 +158,6 @@ impl Process {
             build_flags("U_WRV"), // 用户态可读写
         );
 
-        log::info!(
-            "process entry = {:#x}, heap_bottom = {:#x}",
-            entry,
-            heap_bottom
-        );
-
         // 创建用户态上下文
         let mut context = LocalContext::user(entry);
         // 构造 satp 值：MODE=8 (Sv39) | root_ppn
@@ -150,6 +169,7 @@ impl Process {
             address_space,
             heap_bottom,
             program_brk: heap_bottom,
+            syscall_count: [0; 512],
         })
     }
 
