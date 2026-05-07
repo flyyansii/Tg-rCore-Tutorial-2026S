@@ -1,203 +1,215 @@
-# OS ch2 补充讲述稿：从批处理系统到 moving tangram
+# OS ch2 补充讲述稿
 
-> 这一稿尽量按“我讲给同学听”的口吻写，不追求像教材，而是追求把我真正理解的过程讲清楚。
+## 1. 从 ch1 到 ch2：内核开始服务用户程序
 
-## 1. 为什么第二章不是“又写一个 Hello world”
+ch1 的内核像是“自己能开机、自己能打印”的裸机程序。ch2 进一步让它变成一个最小操作系统：它要能运行别的程序。
 
-第一章的 Hello world 解决的是内核自己的启动问题：裸机上没有标准库，没有普通 main，没有操作系统帮我打印，所以我要自己搭一个最小运行环境。
-
-第二章开始，问题变了。内核不只是自己运行，它要运行用户程序。也就是说，内核开始承担操作系统最基本的职责：给应用程序提供执行环境。
-
-我可以这样理解：
+这一步看起来简单，其实已经出现操作系统最核心的边界：
 
 ```text
-第一章：我让内核自己站起来。
-第二章：我让内核带着用户程序跑起来。
+内核态：拥有硬件和特权资源。
+用户态：运行普通应用，不能直接碰硬件。
+系统调用：用户态请求内核服务的入口。
 ```
 
-## 2. 批处理系统到底是什么
+所以 ch2 的主线不是“多跑几个 hello world”，而是建立用户态和内核态之间的控制流。
 
-批处理的意思不是多个程序同时跑，而是内核自动执行一批程序。
+## 2. 用户程序从哪里来
+
+因为 ch2 还没有文件系统，所以用户程序不能像 Linux 那样从磁盘加载。它们是在构建内核时被一起打包进去的。
+
+流程是：
 
 ```text
-app0 运行
-app0 退出
-app1 运行
-app1 退出
-app2 运行
+写 user/src/bin/xxx.rs
+  -> 编译成 RISC-V 用户程序
+  -> build.rs 读取 cases.toml
+  -> 生成 app.asm
+  -> app.asm 用 .incbin 嵌入用户程序二进制
+  -> 内核编译时把 app.asm 链接进去
+```
+
+我可以把它理解为：ch2 的内核镜像里自带一包用户程序。内核启动后，不是去磁盘找程序，而是从自己镜像中的 app 区找。
+
+## 3. app 在内核里和运行时不是一回事
+
+这里最容易混淆：
+
+```text
+app 在内核镜像里的位置
+  只是存放位置，像一个压在内核包里的文件。
+
+app 运行时的位置
+  是内核把它复制到 base 地址之后，真正从那里开始执行。
+```
+
+所以“链接进内核”和“运行在某个地址”是两步：
+
+```text
+先嵌入
+再复制
+最后执行
+```
+
+这也解释了为什么 `cases.toml` 里会有 base/step。它们不是告诉编译器源代码在哪里，而是告诉内核运行时把 app 放到哪里。
+
+## 4. 批处理系统如何运行多个程序
+
+批处理系统的逻辑很朴素：
+
+```text
+运行 app0
+app0 exit
+运行 app1
+app1 exit
+运行 app2
 ...
 ```
 
-它的价值是自动化。以前如果只有一个程序，运行完就结束；批处理让内核能提前拿到一批程序，然后一个接一个执行。
+它没有分时，没有抢占，也没有“同时运行”。如果 app0 死循环不退出，app1 就永远不会被执行。
 
-这比第一章更像操作系统了，但还不是现代意义上的多任务系统。因为当前程序不退出，下一个程序就没有机会运行。
+这和 ch3 的分时多任务不同。ch2 是顺序自动化，ch3 才是轮流切换。
 
-## 3. 用户程序如何进入内核
+## 5. 用户态到内核态的第一次闭环
 
-用户程序运行在 U-mode，内核运行在 S-mode。用户程序不能直接调用内核函数，否则权限隔离就没有意义了。
+当用户程序打印：
 
-所以用户程序要请求内核服务时，需要执行：
-
-```text
-ecall
+```rust
+println!("Hello");
 ```
 
-`ecall` 会让 CPU 从 U-mode 陷入 S-mode。内核再根据寄存器里的 syscall id 判断用户想做什么。
-
-一个 `println!` 的链路可以这样讲：
+真正发生的是：
 
 ```text
 println!
-  -> user console
-  -> sys_write
-  -> syscall 函数
-  -> ecall 指令
-  -> 内核 handle_syscall
-  -> console_putchar
+  -> user_lib::write
+  -> syscall(SYS_WRITE, ...)
+  -> ecall
+  -> CPU 进入 S-mode
+  -> 内核根据 scause 判断是 UserEnvCall
+  -> 内核读取 a7 得到 syscall id
+  -> 内核调用 write 实现
+  -> 输出字符
+  -> 设置返回值
+  -> sepc += 4
+  -> sret 回用户态
 ```
 
-所以 `syscall` 是软件封装，`ecall` 是硬件指令。
+这个闭环是后面所有系统调用的基础。以后文件、进程、管道、线程，本质上也都要通过系统调用进入内核。
 
-## 4. 用户程序为什么要提前打包
+## 6. TrapContext 为什么关键
 
-第二章还没有文件系统，内核启动后不能去硬盘里找用户程序。因此用户程序必须在构建阶段就被塞进内核镜像。
+发生系统调用时，用户程序不是“正常调用内核函数”，而是被中断式地切到内核。
 
-构建流程是：
+为了之后还能回去，内核必须保存用户现场。TrapContext 就是这个现场。
+
+它保存：
 
 ```text
-编译用户程序
-  -> build.rs 收集用户程序
-  -> 生成 app.asm
-  -> app.asm 用 .incbin 嵌入用户程序二进制
-  -> 内核链接时把这些 app 一起带上
+通用寄存器
+sepc
+sstatus
 ```
 
-运行时，内核通过 `AppMeta::locate()` 找到这些 app 的边界，再把当前 app 复制到指定运行地址。
+如果把用户程序比作正在写作业的人，TrapContext 就像拍了一张桌面照片：笔放哪里、纸写到哪、下一步该写哪一行，都被记录下来。内核处理完事情，再按照片恢复现场。
 
-## 5. ch2-moving-tangram 的设计思路
+## 7. `sepc`、`scause`、`sstatus`
 
-老师给的进阶任务是通过多程序/多批次方式，逐块渲染七巧板组成的 “O/S” 图案。
+这三个 CSR 是理解 Trap 的核心。
 
-我当前实现的思路是：
+`scause`：
 
 ```text
-内核仍然按 ch2 批处理方式运行 app0-app7
-  -> 每完成一个 app，completed_apps += 1
-  -> 所有 app 跑完后，进入 graphics::demo
-  -> graphics 根据批处理完成节奏逐块画出 O/S 图案
+告诉内核为什么进来了。
+比如 ecall、非法指令、访存错误。
 ```
 
-这不是为了单纯炫技画图，而是把“批处理的一步一步推进”变成可见的图形变化。
-
-如果讲给别人听，我会说：
+`sepc`：
 
 ```text
-ch2 的抽象是“一批程序顺序完成”。
-moving tangram 把这个抽象映射成“一块一块拼出 OS 图案”。
+记录用户程序在哪里被打断。
 ```
 
-## 6. 图形输出怎么做
-
-图形输出不是 `println!`。`println!` 是字符输出，走 SBI console。图形输出要写 framebuffer。
-
-我这里使用 QEMU 提供的 VirtIO-GPU：
+`sstatus`：
 
 ```text
-QEMU virtio-gpu-device
-  -> virtio-drivers
-  -> setup_framebuffer
-  -> 写像素
-  -> gpu.flush
-  -> 图形窗口显示
+记录特权级相关状态，影响 sret 回到哪里。
 ```
 
-`graphics.rs` 里做了几件事：
+处理普通系统调用时，内核要把 `sepc` 向后移动一条指令，让用户程序回到 `ecall` 后面继续执行。
+
+## 8. `sys_write` 和 `sys_exit` 的区别
+
+`sys_write`：
 
 ```text
-VirtioHal：提供 DMA 内存。
-FramebufferCanvas：把像素写进 framebuffer。
-draw_polygon：填充三角形/四边形。
-piece(index)：定义每一块七巧板。
-demo：逐块绘制并 flush。
+处理完以后，用户程序还要继续运行。
+所以需要恢复现场，回到用户态。
 ```
 
-## 7. 调试过程中最有价值的三个坑
-
-第一个坑：缺 `rust-objcopy`。
-
-ch2 构建用户程序镜像时需要裁剪 ELF，因此要安装 `cargo-binutils` 和 `llvm-tools-preview`。
-
-第二个坑：Rust 2024 的 unsafe 规则。
-
-`asm!("ecall")` 是裸机系统调用汇编。即使它在 `unsafe fn` 里面，也需要显式：
-
-```rust
-unsafe {
-    asm!("ecall", ...);
-}
-```
-
-第三个坑：地址冲突。
-
-加入图形模块后，内核变大。原本用户程序加载到 `0x8040_0000`，会和内核区域冲突。现象是：
+`sys_exit`：
 
 ```text
-QEMU 启动了
-日志停在 app meta ready
-没有 load app0
-图形窗口 inactive
+用户程序已经结束。
+所以内核不再回到这个 app，而是加载下一个 app。
 ```
 
-把 ch2 用户程序基址改成：
+这就是 ch2 批处理系统推进到下一个程序的原因。
+
+## 9. 组件化仓库如何对应 Guide
+
+Guide 原文中的模块比较展开，例如 `trap/`、`syscall/`、`batch.rs`。当前 tg 组件化仓库把这些拆到了 crate 或集中在 `main.rs` 中。
+
+学习时可以这样对照：
 
 ```text
-0x8100_0000
+batch.rs 的 app 管理
+  -> tg_linker::AppMeta + main.rs 批处理循环
+
+trap.S / context.rs
+  -> tg_kernel_context::LocalContext
+
+syscall/mod.rs
+  -> tg_syscall::handle
+
+fs.rs/process.rs
+  -> main.rs 中 impl IO / impl Process
 ```
 
-之后，app0-app7 能正常跑完，并进入 VirtIO-GPU 初始化。
+这也是老师说“组件化 rCore”的意义：同样的 OS 原理，通过 crate 的方式复用和组织。
 
-## 8. 当前进阶测试状态
+## 10. ch2-moving-tangram 如何理解
 
-我现在完成的是进阶图形 demo 的运行验证：
+七巧板图形扩展不是 ch2 的主线，但它可以帮助理解批处理的节奏。
+
+批处理本来是看不见的：
 
 ```text
-cargo build 通过
-QEMU 能启动
-app0-app7 顺序运行
-进入 VirtIO-GPU 初始化
-图形窗口显示 O/S 七巧板
-右侧 S 越界裁剪问题已修正
+app0 完成
+app1 完成
+app2 完成
 ```
 
-但是要注意，当前版本为了方便观察图形，最后不会自动关机，而是停在 `spin_loop` 保持窗口。
-
-所以：
+图形化后可以变成：
 
 ```text
-它适合人工观察进阶图形 demo。
-它不适合直接跑 test.sh 自动 checker。
+完成一个阶段，画出一块图形。
+完成多个阶段，逐步拼出 OS 图案。
 ```
 
-如果后面要提交一个同时支持 checker 和 demo 的版本，最好加 feature 开关：
+所以它是“用图形把批处理进度可视化”，不是替代 Trap/syscall 的核心学习。
 
-```text
-demo 模式：保留窗口。
-test 模式：跑完后 shutdown(false)。
-```
+## 11. 给别人讲 ch2 的顺序
 
-## 9. 我会怎样总结第二章
+如果我要讲给别人听，我会按这个顺序：
 
-第二章让我第一次看到“操作系统运行用户程序”的闭环：
-
-```text
-构建阶段把 app 放进内核
-运行阶段内核找到 app
-内核准备用户态上下文
-CPU 进入用户态执行 app
-app 通过 ecall 回内核
-内核处理 syscall
-app exit 后运行下一个 app
-```
-
-moving-tangram 则把这个闭环变成了可视化实验。它让我意识到，OS 不是只背概念，很多问题最后都会落到地址、链接、寄存器、设备和调试输出上。
-
+1. ch1 只是内核自己能启动，ch2 开始运行用户程序。
+2. 用户程序构建期被打包进内核，因为还没有文件系统。
+3. 内核运行时找到 app 的起止地址，把它复制到运行基址。
+4. 内核构造用户上下文，用 `sret` 进入 U-mode。
+5. 用户程序通过 `ecall` 请求内核。
+6. TrapContext 保存用户现场。
+7. 内核根据 `scause/a7` 判断系统调用类型。
+8. `write` 会返回当前 app，`exit` 会切到下一个 app。
+9. 这就是最小批处理系统。
+10. 组件化版本把 Guide 中的 trap/syscall/batch 分散封装到了 crate 和 `main.rs`。

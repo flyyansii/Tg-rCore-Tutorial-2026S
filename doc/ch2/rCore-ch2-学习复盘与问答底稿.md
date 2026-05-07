@@ -1,204 +1,269 @@
 # rCore ch2 学习复盘与问答底稿
 
-> 本文记录我在 ch2 学习和 ch2-moving-tangram 实验中的理解、误区修正、AI 协作过程和后续复习问题。
+## 1. 学习主线
 
-## 1. 我对 ch2 的一句话理解
+ch2 的学习主线是：在 ch1 内核能启动的基础上，让内核具备运行用户程序的能力。
 
-ch2 让内核第一次真正成为“用户程序的执行环境”。它不只是自己启动，而是能把一批用户程序按顺序加载、运行、处理 syscall，并在一个程序结束后继续运行下一个程序。
-
-```text
-ch1：内核自己活起来。
-ch2：内核开始运行别人，也就是运行用户程序。
-```
-
-## 2. 批处理不是多任务
-
-我一开始容易把 ch2 和 ch3 混在一起。现在修正如下：
+我一开始容易把它理解成“把多个程序放到内核里，然后一个个执行”。这个说法不算错，但不够完整。更准确地说，ch2 建立了三个机制：
 
 ```text
-ch2 批处理：
-  app0 跑完 -> app1 跑完 -> app2 跑完
-  没有时间片，没有任务切换。
-
-ch3 多道/分时：
-  app0 跑一会儿 -> app1 跑一会儿 -> app0 继续
-  有任务上下文和调度。
+构建期：把用户程序编译并链接进内核。
+运行期：内核把用户程序复制到指定地址并进入 U-mode。
+交互期：用户程序通过 ecall 请求内核服务。
 ```
 
-所以 ch2 的重点不是“并发”，而是“自动顺序执行一批程序”。
+这三个机制合在一起，就是批处理操作系统的最小闭环。
 
-## 3. 用户程序为什么也需要运行时
+## 2. 问题：批处理系统和普通函数调用有什么区别？
 
-用户程序不是 Linux 上的普通程序，它也运行在我们自己写的内核环境里，因此也没有标准库、没有普通 main 启动流程。
+我的初始回答：
 
-用户程序启动链：
+> 批处理就是一个程序执行完再执行下一个程序。
+
+补充后的理解：
+
+批处理不只是顺序执行。关键区别是：用户程序和内核程序处在不同特权级。用户程序不能直接调用内核函数，只能通过 `ecall` 陷入内核。内核处理完请求后，再决定是回到当前用户程序，还是结束当前程序并运行下一个。
+
+所以 ch2 的批处理系统不是：
 
 ```text
-user_lib::_start
-  -> clear_bss
-  -> main
-  -> exit(main 返回值)
+kernel 调 app1()
+kernel 调 app2()
 ```
 
-这里的 `main` 是用户写的逻辑，`_start` 是用户库提供的真正入口。`main` 返回后必须 `exit`，否则内核不知道当前 app 已经结束。
-
-## 4. syscall 和 ecall 的关系
-
-我的修正理解：
+而是：
 
 ```text
-syscall 是用户库里的函数封装。
-ecall 是真正让 CPU 从 U-mode 进入 S-mode 的机器指令。
+kernel 准备 app1 的用户上下文
+  -> sret 进入 U-mode
+  -> app1 ecall 回内核
+  -> app1 exit
+  -> kernel 准备 app2 的用户上下文
 ```
 
-例如输出：
+## 3. 问题：用户程序为什么不能直接 `println!`？
+
+我的初始回答：
+
+> 因为用户程序没有标准库，需要系统调用。
+
+补充后的理解：
+
+用户态 `println!` 最终需要输出到终端，而终端是硬件/内核资源。用户程序没有权限直接访问 SBI console 或 UART，所以 `println!` 必须封装成 `write` 系统调用。
+
+调用链是：
 
 ```text
 println!
-  -> write
+  -> user_lib console
   -> sys_write
-  -> syscall(id, args)
   -> ecall
-  -> 内核处理
+  -> 内核 SyscallContext::write
+  -> SBI/console 输出
 ```
 
-用户态不能直接调用内核函数，因为那样特权级隔离就失效了。`ecall` 相当于受控入口，内核只处理它愿意暴露的服务。
+所以 `println!` 不是消失了，而是从“标准库帮我们做”变成“我们自己的 user_lib + 内核 syscall 帮我们做”。
 
-## 5. 为什么要 sepc += 4
+## 4. 问题：`ecall` 是什么？
 
-用户程序执行 `ecall` 后进入内核。此时 `sepc` 记录的是 `ecall` 这条指令的位置。
+我的初始回答：
 
-如果处理完 syscall 后直接 `sret`：
+> ecall 是调用内核级执行指令。
+
+补充后的理解：
+
+`ecall` 是 RISC-V 提供的环境调用指令。用户程序执行 `ecall` 时，CPU 会从 U-mode 切换到 S-mode，并跳到内核设置好的 Trap 入口。
+
+它不是普通函数调用，因为普通函数调用不会改变特权级；`ecall` 会触发 Trap，让 CPU 进入更高特权级处理。
 
 ```text
-CPU 回到 ecall 那一行
-再次执行 ecall
-再次进内核
-无限循环
+普通函数调用：jal -> 同一特权级
+系统调用：ecall -> U-mode 到 S-mode
 ```
 
-所以内核要：
+## 5. 问题：TrapContext 是干什么的？
+
+我的初始理解：
+
+> 保存用户程序执行到哪里，类似 ARM 里的 LR 或 PC 返回信息。
+
+补充后的理解：
+
+这个类比方向是对的，但 TrapContext 保存得更多。它保存的是用户态被打断时的完整现场，包括通用寄存器、`sstatus`、`sepc` 等。
+
+可以这样记：
 
 ```text
-ctx.move_next()
+sepc：用户程序被打断的位置
+sstatus：特权状态，决定 sret 后回到哪个模式
+x[0..31]：用户程序当时用到的寄存器
 ```
 
-也就是跳过当前 ecall，让用户程序从下一条指令继续。
+如果没有 TrapContext，内核处理完系统调用后就不知道用户程序该从哪里继续、寄存器该恢复成什么。
 
-## 6. AI 协作过程记录
+## 6. 问题：`sepc` 为什么要加 4？
 
-本次 AI 协作主要分成五步。
+我的初始理解：
 
-第一步：理解任务。
+> 为了跳过 ecall。
+
+补充后的理解：
+
+RISC-V 中普通指令通常是 4 字节。发生 `ecall` 时，`sepc` 保存的是 `ecall` 这条指令的地址。如果处理完系统调用后不把 `sepc += 4`，`sret` 回去后会重新执行同一条 `ecall`，于是又陷入内核，形成死循环。
+
+所以：
 
 ```text
-学：读 ch2，理解批处理、syscall、Trap。
-教：整理代码链和文档，让自己以后能讲清楚。
-用：基于 ch2 做 moving-tangram 图形扩展。
+write/yield 这种要返回用户程序的 syscall：
+  需要 sepc += 4
+
+exit 这种不返回当前程序的 syscall：
+  不需要回到原来的 ecall 后面
 ```
 
-第二步：实现图形扩展。
+## 7. 问题：`scause`、`sepc`、`sstatus` 分别是什么？
+
+### `scause`
+
+记录 Trap 原因，例如：
 
 ```text
-新增 virtio-drivers 依赖
-新增 src/graphics.rs
-修改 QEMU runner，打开 gtk + virtio-gpu-device
-在 rust_main 批处理结束后调用 graphics::demo(completed_apps)
+UserEnvCall：用户执行 ecall
+IllegalInstruction：非法指令
+StoreFault：非法写地址
 ```
 
-第三步：解决工具链问题。
+### `sepc`
+
+记录 Trap 发生时用户程序的 PC。
+
+### `sstatus`
+
+记录特权状态。`sret` 会参考它决定返回后处于 U-mode 还是 S-mode。
+
+你之前用 ARM 的 CPSR/APSR/LR 来类比，这是有帮助的：
 
 ```text
-build.rs 需要 rust-objcopy
-本地补充 cargo-binutils 和 llvm-tools-preview
+sepc 类似“异常返回地址”
+sstatus 类似“异常前后的状态寄存器信息”
+scause 类似“异常原因编号”
 ```
 
-第四步：解决 Rust 2024 unsafe 问题。
+## 8. 问题：用户程序是怎么被链接进内核的？
+
+我的初始回答：
+
+> build.rs 生成 link_app.S，把用户程序放进内核。
+
+补充后的理解：
+
+构建期流程是：
 
 ```text
-tg-rcore-tutorial-syscall/src/user.rs
-asm!("ecall") 必须显式放进 unsafe { ... }
+读取 cases.toml
+编译用户程序
+得到 ELF/bin
+生成 app.asm
+app.asm 用 .incbin 包含用户程序字节
+main.rs 用 global_asm!(APP_ASM) 把 app.asm 链进内核
 ```
 
-这个修改不改变系统调用语义，只是适配新的 Rust unsafe 规则。
+运行期再通过 `AppMeta::locate()` 找到这些程序的起止地址。
 
-第五步：解决内存布局问题。
+所以这里有两个阶段：
 
 ```text
-加入图形模块后内核变大
-旧 app 基址 0x8040_0000 不安全
-改成 0x8100_0000
+构建期：用户程序被放进内核镜像。
+运行期：内核从镜像中找到用户程序并复制到运行地址。
 ```
 
-这一步最像真正 OS bug：不是语法错，而是地址布局冲突。
+## 9. 问题：为什么用户程序需要 `_start`，不能只写 `main`？
 
-## 7. 图形扩展的验证状态
+我的初始回答：
 
-已验证内容：
+> 因为需要定义执行顺序，不然 main 返回后不知道去哪。
+
+补充后的理解：
+
+用户程序运行前也需要一个最小运行时。它负责：
 
 ```text
-cargo build 通过
-QEMU 能启动
-app0-app7 能顺序运行
-能进入 [ch2-tangram] init virtio gpu
-图形窗口能显示 O/S 七巧板
-右侧 S 被裁剪的问题已修正
+清空 .bss
+调用 main
+拿到 main 返回值
+调用 exit
 ```
 
-需要诚实记录：
+如果直接从 `main` 开始，`main` 返回后就没有统一收尾逻辑。`_start` 的存在让用户程序有明确生命周期：
 
 ```text
-当前进阶 demo 最后使用 spin_loop 保持图形窗口。
-所以它不是自动退出型程序。
-课程自带 test.sh 基础 checker 不适合直接跑当前图形版本。
-如果后续要同时满足 checker 和 demo，建议加 feature：
-  cargo run --features demo-graphics  保留窗口
-  cargo run --features auto-exit      跑完自动 shutdown
+_start -> main -> exit
 ```
 
-目前实际采用的是更简单的 `ci` feature：
+## 10. 问题：`sys_write` 为什么不直接写在用户程序 main 里？
+
+我的初始困惑：
+
+> syscall 为什么写 main 里，为什么不都放 syscall.rs？
+
+补充后的理解：
+
+用户态和内核态各有一套 syscall 相关代码。
+
+用户态：
 
 ```text
-普通 cargo run：保留图形窗口。
-test.sh：cargo build --features ci，然后用 qemu -nographic 直接运行内核。
+user/src/syscall.rs
+  负责把 syscall id 和参数放进寄存器，然后 ecall。
 ```
 
-这样 GitHub Actions 不需要 GTK 图形环境，也不会被最后的 `spin_loop` 卡住。
-
-## 8. 我需要能回答的问题
-
-### Q1：ch2 和 ch3 的区别是什么？
-
-ch2 是批处理，一个程序跑完再跑下一个。ch3 开始引入任务切换和调度，多个程序可以轮流执行。
-
-### Q2：为什么 ch2 用户程序要打包进内核？
-
-因为 ch2 还没有文件系统，内核不能运行时从磁盘读 app。只能在构建阶段用 `build.rs` 和 `.incbin` 把 app 二进制嵌进内核。
-
-### Q3：为什么用户程序不能直接调用内核函数？
-
-因为用户态权限低，不能随便访问内核态资源。必须通过 `ecall` 进入内核，由内核检查 syscall id 和参数。
-
-### Q4：为什么加入图形后 app 基址要改？
-
-因为图形驱动、DMA 缓冲区和绘图代码让内核占用空间变大，旧的 `0x8040_0000` 可能覆盖内核。把 app 装载到 `0x8100_0000` 可以避开冲突。
-
-### Q5：为什么 framebuffer 写完还要 flush？
-
-framebuffer 只是内存里的像素数组，`gpu.flush()` 才会让虚拟 GPU 把这块内存同步到图形窗口。
-
-### Q6：为什么右侧 S 一开始缺一块？
-
-QEMU 实际返回的显示分辨率是 `640x480`，而我最初按 `800` 宽度设计坐标。超过 `x=640` 的部分被裁剪了。修正方式是把右侧 S 的坐标压回 `410..630` 范围。
-
-## 9. 我目前的阶段性结论
-
-ch2-moving-tangram 对我来说不只是一个画图 demo。它把三个层面的知识串起来了：
+内核态：
 
 ```text
-OS 原理：批处理、用户态/内核态、syscall。
-工程实现：build.rs、app 打包、QEMU runner、VirtIO-GPU。
-裸机调试：固定地址、内存覆盖、串口日志定位。
+ch2/src/main.rs 或 syscall 模块
+  负责读取 syscall id，分发到 write/exit 等实现。
 ```
 
-这次最重要的收获是：OS 实验里的 bug 不一定是 Rust 语法问题，很多时候是“机器实际怎么执行”和“内存实际怎么摆放”的问题。
+两者不是重复，而是一问一答：
+
+```text
+用户态 syscall.rs：发请求
+内核态 SyscallContext：处理请求
+```
+
+## 11. 问题：ch2 和 ch3 的区别是什么？
+
+ch2：
+
+```text
+一次只运行一个 app。
+当前 app exit 后才运行下一个。
+没有时间片。
+没有任务轮转。
+```
+
+ch3：
+
+```text
+多个 app 都初始化为任务。
+每个任务有 TCB。
+可以 yield 主动让出 CPU。
+可以靠时钟中断强制切换。
+```
+
+所以 ch2 是“批处理”，ch3 是“分时多任务”。
+
+## 12. ch2 学完以后应该能讲清楚什么
+
+我应该能讲清楚：
+
+1. 用户程序如何在构建期被打包进内核。
+2. 内核如何找到用户程序的二进制边界。
+3. 内核如何把用户程序复制到运行地址。
+4. 用户程序如何从 `_start` 调到 `main`。
+5. `println!` 如何变成 `sys_write`。
+6. `ecall` 如何从用户态进入内核态。
+7. TrapContext 为什么要保存用户现场。
+8. `sepc += 4` 为什么必要。
+9. `exit` 为什么会让内核运行下一个程序。
+10. 组件化仓库中哪些 crate 对应 Guide 原文中的 trap/syscall/batch 模块。

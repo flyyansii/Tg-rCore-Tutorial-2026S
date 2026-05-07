@@ -1,249 +1,324 @@
 # rCore ch2 代码链与模块对应底稿
 
-> 本文用于整理 ch2 批处理系统和 ch2-moving-tangram 扩展实验的代码调用链。它不是最终论文式总结，而是后续写学习报告时可以直接拆改的底稿。
+## 0. 这一章到底在解决什么
 
-## 1. ch2 要解决什么问题
+ch1 只证明“内核自己能在裸机上启动，并能借助 SBI 打印字符”。ch2 开始让内核成为用户程序的执行环境：用户程序不再和内核写在一起，而是作为独立应用被编译、打包、加载、运行。
 
-ch1 的重点是让内核自己能在裸机上启动，并通过 SBI 打印字符。ch2 往前走了一步：内核不再只是“自己运行”，而是开始成为用户程序的执行环境。
-
-ch2 的核心能力可以概括成：
+这一章的关键词是：
 
 ```text
-把多个用户程序提前打包进内核
-  -> 内核运行时找到这些程序
-  -> 一次运行一个用户程序
-  -> 用户程序通过 ecall 请求内核服务
-  -> 当前程序 exit 后运行下一个程序
+应用程序
+批处理
+系统调用
+Trap
+TrapContext
+用户态 U-mode
+内核态 S-mode
 ```
 
-这个模型叫批处理系统。它还不是 ch3 的分时多任务，因为 ch2 没有时间片轮转，也没有多个任务来回切换。它的特点是顺序、自动、一个接一个。
+最重要的一句话：
 
-## 2. 本仓库 tg 组件化 ch2 的实际结构
+```text
+ch2 建立了“用户程序 -> ecall -> 内核处理 -> 返回用户程序/运行下一个程序”的基本闭环。
+```
 
-传统 rCore 教程里 ch2 常见结构有 `batch.rs`、`trap/`、`syscall/` 等目录。当前组件化仓库把很多能力封装到外部 crate 中，所以本章主线更集中：
+## 1. Guide 原文代码树和当前组件化仓库的区别
+
+Guide 里的传统 rCore ch2 通常会出现这样的结构：
+
+```text
+os/
+├── build.rs
+├── src/
+│   ├── batch.rs
+│   ├── console.rs
+│   ├── entry.asm
+│   ├── lang_items.rs
+│   ├── link_app.S
+│   ├── linker.ld
+│   ├── main.rs
+│   ├── sbi.rs
+│   ├── syscall/
+│   │   ├── fs.rs
+│   │   ├── mod.rs
+│   │   └── process.rs
+│   └── trap/
+│       ├── context.rs
+│       ├── mod.rs
+│       └── trap.S
+└── user/
+    ├── src/lib.rs
+    ├── src/syscall.rs
+    └── src/bin/*.rs
+```
+
+而组件化 `tg-rcore-tutorial-ch2` 把很多通用能力抽到 crate 里，所以本章源码看起来更集中：
 
 ```text
 tg-rcore-tutorial-ch2/
 ├── build.rs
-│   ├── 读取 tg-rcore-tutorial-user/cases.toml
-│   ├── 编译 ch2 对应用户程序
-│   ├── 必要时用 rust-objcopy 生成用户程序二进制
-│   └── 生成 app.asm，并通过 APP_ASM 链接进内核
-├── .cargo/config.toml
-│   ├── 指定 riscv64gc-unknown-none-elf 目标
-│   ├── 配置 QEMU runner
-│   └── 配置 tg 用户程序目录
 ├── src/main.rs
-│   ├── _start：设置内核栈并跳到 rust_main
-│   ├── rust_main：初始化内核并批处理运行 app
-│   ├── handle_syscall：处理用户程序 ecall
-│   └── impls：实现 console / syscall trait
-├── src/graphics.rs
-│   ├── VirtioHal：给 virtio-drivers 提供 DMA 和地址转换
-│   ├── FramebufferCanvas：向 framebuffer 写像素
-│   ├── piece(index)：返回七巧板图形块
-│   └── demo(completed_apps)：逐块渲染 O/S 图案
-└── ../tg-rcore-tutorial-user/
-    ├── cases.toml：决定 ch2 跑哪些用户程序，以及装载基址
-    └── src/bin：各个用户态测试程序
+└── src/graphics.rs
+
+tg-rcore-tutorial-user/
+├── cases.toml
+├── src/lib.rs
+├── src/syscall.rs
+└── src/bin/*.rs
 ```
 
-## 3. 构建期调用链
+对应关系：
 
-ch2 的用户程序不是从文件系统读出来的，因为此时还没有文件系统。它们是在构建内核时被打包进内核镜像的。
+```text
+Guide 的 batch.rs
+  -> 当前仓库 main.rs + tg_linker::AppMeta
+
+Guide 的 trap/context.rs + trap.S
+  -> 当前仓库 tg-kernel-context crate 的 LocalContext
+
+Guide 的 syscall/fs.rs/process.rs/mod.rs
+  -> 当前仓库 tg-syscall crate + main.rs 里的 SyscallContext 实现
+
+Guide 的 link_app.S
+  -> 当前仓库 build.rs 生成的 app.asm，通过 APP_ASM 链接进内核
+
+Guide 的 user_lib
+  -> tg-rcore-tutorial-user/src/lib.rs 和 syscall.rs
+```
+
+所以组件化版本不是没有这些概念，而是把它们封装到了 crate 或更集中的模块里。学习时不能只看文件数量，要把 Guide 的结构映射到当前仓库。
+
+## 2. 构建期：用户程序如何变成内核的一部分
+
+ch2 没有文件系统，所以用户程序不是运行时从磁盘读出来的，而是在构建内核时被打包进内核镜像。
 
 ```mermaid
 flowchart TD
-    A["tg-rcore-tutorial-user/src/bin/*.rs"] --> B["build.rs 读取 cases.toml"]
-    B --> C["cargo build --bin 用户程序"]
-    C --> D["rust-objcopy 裁剪用户程序镜像"]
-    D --> E["build.rs 生成 app.asm"]
-    E --> F["main.rs global_asm!(APP_ASM)"]
-    F --> G["用户程序二进制成为内核镜像的一部分"]
+    A["user/src/bin/*.rs"] --> B["user_lib: #[start] 调 main"]
+    B --> C["cargo build --bin app --target riscv64gc"]
+    C --> D["生成用户 ELF 或 bin"]
+    D --> E["ch2/build.rs 读取 cases.toml"]
+    E --> F["生成 app.asm"]
+    F --> G[".incbin 把用户程序字节嵌入内核"]
+    G --> H["main.rs global_asm!(APP_ASM)"]
+    H --> I["最终内核镜像包含 app 元数据和 app 二进制"]
 ```
 
-这里的 `app.asm` 负责记录：
+`app.asm` 里大概保存：
 
 ```text
-base：用户程序运行时复制到哪里
-step：多个 app 是否分散到不同地址
+base：运行时把 app 复制到哪个地址
+step：多个 app 间的地址间隔
 count：app 数量
-app_i_start / app_i_end：每个 app 在内核镜像里的边界
-.incbin：把 app 二进制原样嵌入
+app_0_start/app_0_end：app 在内核镜像中的边界
+.incbin：把 app 字节原样嵌入
 ```
 
-## 4. 运行期批处理调用链
+你之前问过“这是 app 在内核里的地址，还是 app 运行时的地址”。答案是两层：
 
-当前组件化 ch2 的运行主链在 `src/main.rs::rust_main()` 里。
+```text
+app_0_start/app_0_end
+  是 app 被嵌入内核镜像后的存放位置。
+
+base + i * step
+  是内核运行时把 app 复制过去的运行位置。
+```
+
+这就形成了：
+
+```text
+内核镜像中的 app 字节
+  -> AppMeta 找到边界
+  -> copy 到约定运行地址
+  -> 从该运行地址进入用户态执行
+```
+
+## 3. 运行期：批处理系统主链路
 
 ```mermaid
 flowchart TD
-    A["main.rs::_start"] --> B["main.rs::rust_main"]
-    B --> C["KernelLayout::zero_bss"]
-    C --> D["tg_console::init_console"]
-    D --> E["tg_syscall::init_io / init_process"]
-    E --> F["AppMeta::locate().iter()"]
-    F --> G["复制当前 app 到运行基址"]
-    G --> H["LocalContext::user(app_base)"]
-    H --> I["ctx.execute()"]
-    I --> J["sret 进入 U-mode 用户程序"]
-    J --> K["用户程序 ecall"]
-    K --> L["回到 main.rs，读取 scause"]
-    L --> M["handle_syscall"]
-    M --> N{"syscall 类型"}
-    N -->|"write"| O["打印并 move_next，回当前 app"]
-    N -->|"exit"| P["当前 app 结束"]
-    P --> Q["completed_apps += 1"]
-    Q --> R{"还有下一个 app?"}
-    R -->|"有"| F
-    R -->|"无"| S["graphics::demo(completed_apps)"]
+    A["QEMU 启动内核"] --> B["main.rs::_start"]
+    B --> C["rust_main()"]
+    C --> D["zero_bss 初始化内核"]
+    D --> E["init_console 初始化输出"]
+    E --> F["tg_syscall::init_io/init_process"]
+    F --> G["AppMeta::locate().iter()"]
+    G --> H["取出 app 在内核镜像中的字节"]
+    H --> I["复制到运行基地址"]
+    I --> J["LocalContext::user(app_entry)"]
+    J --> K["ctx.execute()"]
+    K --> L["sret 进入 U-mode"]
+    L --> M["用户程序运行"]
+    M --> N["ecall 触发 Trap"]
+    N --> O["回到 S-mode 内核"]
+    O --> P["handle_syscall()"]
+    P --> Q{"exit?"}
+    Q -- "否" --> R["写返回值到 a0; sepc += 4"]
+    R --> K
+    Q -- "是" --> S["当前 app 完成"]
+    S --> T{"还有下一个 app?"}
+    T -- "有" --> G
+    T -- "无" --> U["shutdown 或进入 demo"]
 ```
 
-关键点：
+这是 ch2 的批处理系统：一次只运行一个 app。当前 app 不 exit，内核不会主动跑下一个 app。
 
-```text
-LocalContext::user(app_base)
+## 4. 用户程序自己的启动链
+
+用户态不是直接从 `main()` 开始的。`tg-rcore-tutorial-user/src/lib.rs` 会提供一个最小运行时入口。
+
+```mermaid
+flowchart TD
+    A["内核 sret 到用户程序入口"] --> B["user_lib::_start 或 #[start]"]
+    B --> C["clear_bss"]
+    C --> D["调用用户 main()"]
+    D --> E["main 返回 i32"]
+    E --> F["exit(main 返回值)"]
+    F --> G["ecall 进入内核"]
 ```
 
-这一步不是普通函数调用，而是在准备一个用户态上下文。之后 `ctx.execute()` 会恢复寄存器并通过 `sret` 进入 U-mode。
+你之前问过：“为什么不直接执行 main？”
 
-## 5. syscall 调用链
+原因是：哪怕是用户程序，也需要一个很小的运行时做准备工作。比如清空 `.bss`，调用 `main`，并在 `main` 返回后自动 `exit`。如果没有这层，`main` 返回后 CPU 不知道下一步去哪里，程序可能乱跑。
 
-用户程序不能直接调用内核函数，只能通过 `ecall` 进入内核。
+## 5. `println!` 到 `sys_write` 的完整链路
 
-```text
-用户程序 println!
-  -> user_lib 的 write 封装
-  -> tg_syscall user 侧 syscall
-  -> asm!("ecall")
-  -> CPU 从 U-mode 进入 S-mode
-  -> 内核读取 a7 和 a0-a5
-  -> tg_syscall::handle
-  -> SyscallContext::write / exit
+这是你当时最想理顺的一条链。用户程序打印字符，并不是直接写终端，而是通过系统调用请求内核写。
+
+```mermaid
+flowchart TD
+    A["user/bin/00hello_world.rs"] --> B["println!"]
+    B --> C["user/src/console.rs::write_str"]
+    C --> D["user/src/syscall.rs::sys_write(fd, buf, len)"]
+    D --> E["syscall(id=WRITE, args)"]
+    E --> F["asm ecall"]
+    F --> G["CPU 从 U-mode 陷入 S-mode"]
+    G --> H["保存用户 TrapContext"]
+    H --> I["内核 trap_handler 或组件化 handle_syscall"]
+    I --> J["tg_syscall::handle"]
+    J --> K["SyscallContext::write"]
+    K --> L["console_putchar / print!"]
+    L --> M["SBI console 输出到终端"]
+    M --> N["返回值写入 a0"]
+    N --> O["sepc += 4 跳过 ecall"]
+    O --> P["sret 回用户态"]
 ```
 
 寄存器约定：
 
 ```text
-a7：syscall id
-a0-a5：参数
+a7：系统调用编号，比如 SYS_WRITE
+a0-a5：系统调用参数
 a0：返回值
-sepc：用户程序 ecall 所在 PC
+sepc：发生 Trap 时用户程序的 PC
+scause：Trap 原因
+sstatus：特权状态
 ```
 
-处理完非 exit syscall 后需要：
+如果内核处理完 `write` 不执行 `sepc += 4`，返回用户态后会再次执行同一条 `ecall`，程序就会卡在同一个系统调用上。
+
+## 6. TrapContext 保存了什么
+
+在 Guide 原文中，TrapContext 是非常核心的结构。它保存的是“用户态被打断时的现场”。
+
+可以理解为：
 
 ```text
-ctx.move_next()
+TrapContext = 用户程序暂停瞬间的寄存器快照
 ```
 
-也就是让 `sepc += 4`，否则返回用户态后会再次执行同一条 `ecall`。
+典型内容包括：
 
-## 6. ch2-moving-tangram 扩展调用链
+```text
+x[0..31]：通用寄存器
+sstatus：进入 Trap 前后的特权状态
+sepc：用户程序被打断的位置
+```
 
-进阶任务要求基于 ch2 的多程序/多批次机制，逐块渲染七巧板组成的 “O/S” 图案。当前实现采用“批处理完成计数 + 内核统一逐块绘制”的方式：
+当用户程序执行 `ecall`：
+
+```text
+U-mode 用户程序
+  -> ecall
+  -> 硬件切 S-mode
+  -> trap.S 保存寄存器到 TrapContext
+  -> trap_handler 根据 scause 处理
+  -> __restore 从 TrapContext 恢复寄存器
+  -> sret 回用户态
+```
+
+组件化版本里这些底层细节被 `tg-kernel-context::LocalContext` 封装，但理解上仍然是 TrapContext 这条逻辑。
+
+## 7. `sys_exit` 和运行下一个程序
+
+当用户程序调用 `exit`：
 
 ```mermaid
 flowchart TD
-    A["批处理 for 循环"] --> B["每完成一个 app，completed_apps += 1"]
-    B --> C["所有 app 运行结束"]
-    C --> D["graphics::demo(completed_apps)"]
-    D --> E["VirtIO MMIO transport"]
-    E --> F["VirtIOGpu::new"]
-    F --> G["setup_framebuffer"]
-    G --> H["draw one piece"]
-    H --> I["gpu.flush"]
-    I --> J{"15 块画完?"}
-    J -->|"否"| H
-    J -->|"是"| K["spin_loop 保持 QEMU 图形窗口"]
+    A["user main 返回或主动 exit"] --> B["sys_exit"]
+    B --> C["ecall"]
+    C --> D["内核识别 syscall id = EXIT"]
+    D --> E["当前 app 标记完成"]
+    E --> F["不再恢复当前 app"]
+    F --> G["加载下一个 app"]
 ```
 
-这版不是让每个用户程序真正直接画一块，而是把“完成了多少个批处理程序”映射到“图形逐块出现”。它的教学价值是把抽象的批处理节奏可视化。
-
-## 7. 图形模块职责
-
-`src/graphics.rs` 主要分成四层：
+这里和 `write` 不同：
 
 ```text
-VirtioHal
-  给 virtio-drivers 提供 DMA 分配、物理/虚拟地址转换。
-
-FramebufferCanvas
-  把 RGB 转成 framebuffer 中的 BGRA 像素。
-
-draw_polygon / contains
-  用多边形填充算法画三角形和四边形。
-
-demo(completed_apps)
-  初始化 VirtIO-GPU，逐块画 O/S 七巧板并 flush。
+write：处理完还要回到当前用户程序。
+exit：处理完当前用户程序结束，不再回去。
 ```
 
-一个像素写入大概是：
+这就是批处理系统的“一次一个”：只有当前程序 exit 后，才轮到下一个程序。
+
+## 8. ch2-moving-tangram 和基础流程的关系
+
+图形化七巧板不是 ch2 基础机制的核心，而是扩展实验。它把“多个程序按批次执行”的抽象节奏可视化。
+
+本仓库的实现思路可以理解为：
 
 ```text
-index = (y * width + x) * 4
-framebuffer[index + 0] = B
-framebuffer[index + 1] = G
-framebuffer[index + 2] = R
-framebuffer[index + 3] = A
-```
-
-## 8. 本次调试中最关键的地址问题
-
-原始 ch2 的 app 装载基址是：
-
-```text
-0x8040_0000
-```
-
-加入 VirtIO-GPU、DMA 静态缓冲区和绘图代码后，内核镜像明显变大。继续把用户程序复制到 `0x8040_0000`，容易覆盖内核区域或与内核区域靠得过近。
-
-现象：
-
-```text
-QEMU 能启动
-串口输出停在 [ch2] app meta ready
-看不到 load app0
-图形窗口 inactive
-```
-
-修正：
-
-```text
-tg-rcore-tutorial-user/cases.toml
-[ch2]
-base = 0x8100_0000
-```
-
-修正后能看到：
-
-```text
-load app0 to 0x81000000
+批处理执行 app0
+批处理执行 app1
 ...
-load app7 to 0x81000000
-[ch2-tangram] init virtio gpu
+批处理执行 appN
+内核根据完成数量或固定图案绘制七巧板 O/S
+VirtIO-GPU 刷新 framebuffer
 ```
 
-这说明批处理流程已正常跑完，并进入图形初始化。
+它不是替代批处理，而是建立在批处理完成之后的展示层。
 
-## 9. 当前验证状态
+## 9. 本章最容易混淆的三组地址
 
-已完成：
+第一组：内核镜像地址
 
 ```text
-cargo build 通过
-QEMU 能用绝对路径启动
-ch2 app0-app7 能顺序运行
-VirtIO-GPU 能进入初始化并获取 display info
-O/S 图案能在 QEMU 图形窗口显示
-S 右侧越界问题已通过把坐标压回 640 宽 framebuffer 内修正
+app 被 .incbin 放在内核镜像里的位置。
 ```
 
-需要注意：
+第二组：用户程序运行地址
 
 ```text
-当前 demo 为了让图形窗口保留，最后使用 spin_loop。
-因此课程原 test.sh 基础 checker 不适合直接验证这个进阶图形版本。
-若要跑自动 checker，需要临时切回 shutdown(false)，或增加 feature 区分 test/demo 模式。
+内核把 app 复制到 base 指定地址后，从这里进入用户态。
 ```
 
+第三组：物理地址
+
+```text
+ch2 还没有页表，所以运行地址基本就是物理地址。
+```
+
+到 ch4 后会变成：
+
+```text
+用户虚拟地址 -> 页表 -> 物理地址
+```
+
+所以 ch2 是后面虚拟内存机制的铺垫。
+
+## 10. 一句话总结 ch2
+
+```text
+ch2 让内核第一次真正成为用户程序的执行环境：它能加载用户程序，切到 U-mode 执行，处理 ecall，再根据 exit 顺序执行下一个程序。
+```

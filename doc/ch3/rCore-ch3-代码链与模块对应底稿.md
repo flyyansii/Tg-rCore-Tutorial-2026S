@@ -1,256 +1,422 @@
 # rCore ch3 代码链与模块对应底稿
 
-本文用“模块在哪里、函数怎么走”的方式整理 ch3。目标不是背代码，而是知道一条执行流经过哪些模块。
+## 0. ch3 主线
 
-## 1. 目录结构重点
+ch2 是批处理：一个 app exit 后才运行下一个。ch3 的目标是分时多任务：多个 app 都可以被内核管理，每个 app 运行一小段时间后让出 CPU，之后还能从原来的位置继续。
+
+核心问题：
+
+```text
+如何保存一个任务的执行现场？
+如何恢复另一个任务的执行现场？
+第一次运行任务时没有旧现场怎么办？
+系统调用和时钟中断如何触发调度？
+```
+
+Guide 原文中的 ch3 通常有：
+
+```text
+loader.rs
+task/
+  context.rs
+  switch.S
+  switch.rs
+  task.rs
+  mod.rs
+timer.rs
+trap/
+syscall/
+```
+
+当前组件化 `tg-rcore-tutorial-ch3` 更集中：
 
 ```text
 tg-rcore-tutorial-ch3/
-├── build.rs
-├── Cargo.toml
-├── test.sh
-└── src
-    ├── main.rs
-    ├── task.rs
-    ├── graphics.rs
-    └── keyboard.rs
-
-tg-rcore-tutorial-user/
-├── cases.toml
-└── src
-    ├── lib.rs
-    └── bin
-        ├── ch3_trace.rs
-        ├── ch3_snake.rs
-        └── ch3_snake_ci.rs
+├── src/main.rs
+├── src/task.rs
+├── src/graphics.rs
+└── src/keyboard.rs
 ```
 
-模块分工：
+对应关系：
 
 ```text
-build.rs
-  选择 cases.toml 里的应用，把用户程序编译并链接进内核。
+Guide loader.rs
+  -> build.rs + tg_linker::AppMeta + main.rs 加载循环
 
-src/main.rs
-  内核入口、主调度循环、系统调用实现、Trap 原因处理、stdin 输入缓存入口。
+Guide task/task.rs
+  -> ch3/src/task.rs::TaskControlBlock
 
-src/task.rs
-  TaskControlBlock、系统调用处理、任务完成状态、系统调用计数。
+Guide task/mod.rs TaskManager
+  -> ch3/src/main.rs 中全局任务数组 + 调度循环
 
-src/graphics.rs
-  ch3-snake 图形输出支持，把用户态 SnakeFrame 画到 VirtIO-GPU framebuffer。
+Guide task/context.rs + switch.S
+  -> tg-kernel-context crate 的 LocalContext::execute
 
-src/keyboard.rs
-  ch3-snake 键盘输入支持，从 VirtIO Keyboard 读取 W/A/S/D/Q。
+Guide trap/mod.rs
+  -> main.rs 调度循环读取 scause 并调用 handle_syscall
 
-tg-rcore-tutorial-user/src/lib.rs
-  用户态最小运行时，提供 println、sleep、try_getchar 等接口。
-
-tg-rcore-tutorial-user/src/bin/ch3_snake.rs
-  用户态可交互贪吃蛇。
-
-tg-rcore-tutorial-user/src/bin/ch3_snake_ci.rs
-  自动演示贪吃蛇，用于 CI。
+Guide syscall/fs.rs/process.rs
+  -> tg-syscall crate + main.rs 中 IO/Process/Scheduling/Clock/Trace trait 实现
 ```
 
-## 2. 启动到多任务加载
+## 1. ch3 启动和任务初始化链
 
 ```mermaid
 flowchart TD
     A["QEMU 启动内核"] --> B["main.rs::_start"]
-    B --> C["main.rs::rust_main"]
-    C --> D["zero_bss 清空 BSS"]
-    D --> E["tg_console::init_console"]
-    E --> F["tg_syscall::init_* 注册 syscall 实现"]
-    F --> G["tg_linker::AppMeta::locate() 找到所有 app"]
-    G --> H["task.rs::TaskControlBlock::init(entry)"]
-    H --> I["主循环 round-robin 调度"]
+    B --> C["rust_main()"]
+    C --> D["zero_bss / init_console / init syscall"]
+    D --> E["AppMeta::locate().iter()"]
+    E --> F["为每个 app 创建 TaskControlBlock"]
+    F --> G["TaskControlBlock::init(entry)"]
+    G --> H["LocalContext::user(entry)"]
+    H --> I["设置用户 sp 到该任务用户栈顶"]
+    I --> J["finish=false; syscall_count 清零"]
+    J --> K["全部任务进入调度循环"]
 ```
 
-关键点：
+`TaskControlBlock` 可以理解成一个任务档案袋：
 
 ```text
-build.rs 提前把用户程序作为数据放进内核镜像。
-rust_main 运行时通过 AppMeta 找到这些应用。
-每个 app 对应一个 TaskControlBlock。
+ctx：用户态上下文，保存寄存器和返回位置
+finish：任务是否结束
+stack：该任务自己的用户栈
+syscall_count：trace 作业用的系统调用计数
 ```
 
-## 3. 一个任务被执行的路径
+Guide 里的 `TaskManager` 在当前组件化仓库中没有单独文件，但功能仍然存在：全局任务数组、当前下标、轮转选择未完成任务，这些共同承担了 TaskManager 的职责。
 
-```mermaid
-flowchart TD
-    A["main.rs 调度循环选中 tcb"] --> B["task.rs::TaskControlBlock::execute"]
-    B --> C["tg-kernel-context::LocalContext::execute"]
-    C --> D["恢复用户寄存器"]
-    D --> E["sret 进入 U-mode"]
-    E --> F["用户程序继续运行"]
-```
+## 2. TaskManager 的职责
 
-这里的 `execute()` 不是普通函数调用，而是恢复寄存器后通过 RISC-V 特权级返回机制进入用户程序。
+TaskManager 不是只保存 TCB，它要管理任务状态。
 
-## 4. write 系统调用路径：普通字符输出
-
-```mermaid
-flowchart TD
-    A["用户程序 println!"] --> B["user_lib::Console::put_str"]
-    B --> C["tg_syscall::write"]
-    C --> D["ecall"]
-    D --> E["Trap 回到 main.rs 调度循环"]
-    E --> F["task.rs::TaskControlBlock::handle_syscall"]
-    F --> G["tg_syscall::handle"]
-    G --> H["main.rs::impls::SyscallContext::write"]
-    H --> I["tg_console 输出到 SBI console"]
-```
-
-重点：
+Guide 里的典型状态：
 
 ```text
-用户态只负责发出 syscall。
-真正写终端的是内核里的 SyscallContext::write。
+UnInit
+Ready
+Running
+Exited
 ```
 
-## 5. write 系统调用路径：snake 图形输出
+当前组件化版本简化成：
+
+```text
+finish = false：还能运行
+finish = true：已经 exit 或被杀死
+当前下标 i：调度器正在考虑哪个任务
+```
+
+调度器做的事：
 
 ```mermaid
 flowchart TD
-    A["user/bin/ch3_snake.rs::draw"] --> B["打包 SnakeFrame"]
-    B --> C["user_lib::write(fd=3, frame_bytes)"]
+    A["从当前 i 开始"] --> B{"task[i].finish?"}
+    B -- "true" --> C["i = next"]
+    C --> B
+    B -- "false" --> D["执行 task[i]"]
+    D --> E{"返回事件"}
+    E -- "Yield/Timer" --> F["i = next"]
+    E -- "Exit/Fault" --> G["finish = true"]
+    G --> F
+    F --> A
+```
+
+所以你可以把 TaskManager 理解成“任务表 + 状态机 + 选下一个任务的策略”。
+
+## 3. TrapContext 和 TaskContext 的区别
+
+这是 ch3 最容易混的点。
+
+### TrapContext
+
+TrapContext 保存“用户态进入内核时”的现场。
+
+触发场景：
+
+```text
+用户程序 ecall
+用户程序非法指令
+用户程序访存异常
+时钟中断
+```
+
+保存内容：
+
+```text
+用户通用寄存器
+sepc
+sstatus
+```
+
+作用：
+
+```text
+让内核处理完 Trap 后，还能回到同一个用户程序继续。
+```
+
+### TaskContext
+
+TaskContext 保存“内核态任务切换时”的现场。
+
+触发场景：
+
+```text
+内核决定从 app0 切到 app1
+```
+
+保存内容通常更少：
+
+```text
+ra
+sp
+s0-s11 等 callee-saved 寄存器
+```
+
+作用：
+
+```text
+让内核以后能回到某个任务对应的内核执行路径。
+```
+
+一句话区分：
+
+```text
+TrapContext：用户态 <-> 内核态之间的现场。
+TaskContext：内核态任务 <-> 内核态任务之间的现场。
+```
+
+当前组件化版本中，这些底层细节被 `LocalContext` 封装，但理解上仍然沿用这个区别。
+
+## 4. 第一次进入任务：为什么要“伪造”上下文
+
+你之前问过：第一次运行 app 时，它明明没有被切出过，为什么可以被“恢复”？
+
+答案是：内核提前构造了一个看起来像“刚从内核返回用户态”的上下文。
+
+Guide 中常见做法：
+
+```text
+TaskContext::goto_restore()
+  -> ra 设置成 __restore
+  -> sp 指向内核栈上提前放好的 TrapContext
+```
+
+这样第一次 `__switch` 到该任务时：
+
+```text
+__switch 恢复 ra/sp
+  -> ret 跳到 __restore
+  -> __restore 从伪造的 TrapContext 恢复用户寄存器
+  -> sret 进入 app0 用户态
+```
+
+所以“假地址骗系统运行”的本质是：
+
+```text
+第一次没有真实的历史现场。
+内核就提前摆好一个初始现场。
+让通用的恢复路径以为它正在恢复一个任务。
+```
+
+这不是作弊，而是操作系统常用技巧：用统一的上下文切换路径启动新任务。
+
+## 5. app0 yield 后如何回到 app1，再回到 app0
+
+```mermaid
+flowchart TD
+    A["app0 用户态运行"] --> B["app0 调用 yield"]
+    B --> C["ecall 进入内核"]
+    C --> D["保存 app0 TrapContext"]
+    D --> E["trap_handler/syscall 识别 yield"]
+    E --> F["调度器选择 app1"]
+    F --> G["__switch(app0_task_cx, app1_task_cx)"]
+    G --> H["保存 app0 TaskContext"]
+    H --> I["恢复 app1 TaskContext"]
+    I --> J{"app1 第一次运行?"}
+    J -- "是" --> K["ra -> __restore"]
+    K --> L["__restore 恢复 app1 初始 TrapContext"]
+    J -- "否" --> M["返回 app1 上次切出点"]
+    L --> N["sret 进入 app1 用户态"]
+    M --> N
+```
+
+之后 app1 再 yield：
+
+```text
+app1 保存自己的 TrapContext
+__switch 保存 app1 TaskContext
+恢复 app0 TaskContext
+回到 app0 上次被 switch 走之后的位置
+__restore 恢复 app0 TrapContext
+sret 回 app0 用户态
+```
+
+这就是为什么 app0 运行一半后还能继续：它的用户现场在 TrapContext 中，内核切换现场在 TaskContext 中。
+
+## 6. syscall 调用链：以 write 为例
+
+```mermaid
+flowchart TD
+    A["用户程序 println!"] --> B["user_lib::write"]
+    B --> C["user syscall.rs::syscall"]
     C --> D["ecall"]
-    D --> E["task.rs::handle_syscall"]
-    E --> F["main.rs::SyscallContext::write"]
-    F --> G{"fd == GRAPHICS_FD?"}
-    G --> H["graphics.rs::submit_snake_frame"]
-    H --> I["graphics.rs::ensure_gpu"]
-    I --> J["VirtIOGpu::setup_framebuffer"]
-    J --> K["graphics.rs::draw_frame"]
-    K --> L["VirtIOGpu::flush"]
-    L --> M["QEMU GTK 窗口显示"]
+    D --> E["硬件进入 S-mode"]
+    E --> F["保存 TrapContext"]
+    F --> G["main.rs 调度循环读 scause"]
+    G --> H["task.rs::TaskControlBlock::handle_syscall"]
+    H --> I["读取 a7 syscall id"]
+    I --> J["读取 a0-a5 参数"]
+    J --> K["tg_syscall::handle"]
+    K --> L["IO::write / fs.rs 语义"]
+    L --> M["console 输出"]
+    M --> N["返回值写回 a0"]
+    N --> O["sepc += 4"]
+    O --> P["返回 SchedulingEvent::None"]
+    P --> Q["继续执行当前任务"]
 ```
 
-`fd = 3` 是本实验约定的图形通道。它让用户态仍然走系统调用，而不是直接访问 GPU。
+Guide 中会把 syscall 拆成：
 
-## 6. read 系统调用路径：snake 键盘输入
+```text
+syscall/mod.rs：按 syscall id 分发
+syscall/fs.rs：write/read 等文件 IO
+syscall/process.rs：exit/yield 等进程控制
+```
+
+组件化版本中：
+
+```text
+tg_syscall::handle：统一分发
+main.rs impl IO：对应 fs.rs
+main.rs impl Process/Scheduling：对应 process.rs
+task.rs handle_syscall：从上下文取 id/args，并把返回事件交给调度器
+```
+
+## 7. yield 调用链
 
 ```mermaid
 flowchart TD
-    A["用户按 W/A/S/D/Q"] --> B["QEMU virtio-keyboard-device"]
-    B --> C["keyboard.rs::refresh"]
-    C --> D["VirtIOInput::pop_pending_event"]
-    D --> E["evdev keycode 转 ASCII"]
-    E --> F["main.rs::input::LAST_KEY"]
-    G["user/bin/ch3_snake.rs"] --> H["user_lib::try_getchar"]
-    H --> I["user_lib::read(STDIN)"]
-    I --> J["ecall"]
-    J --> K["main.rs::SyscallContext::read"]
-    K --> L["input::take"]
-    L --> M["返回 Some(byte) 或 None"]
-    M --> N["蛇改变方向或退出"]
+    A["用户程序 yield"] --> B["ecall"]
+    B --> C["TaskControlBlock::handle_syscall"]
+    C --> D["tg_syscall::handle"]
+    D --> E["Scheduling::sched_yield"]
+    E --> F["返回 Ret::Done"]
+    F --> G["识别 Id::SCHED_YIELD"]
+    G --> H["ctx.move_next()"]
+    H --> I["返回 SchedulingEvent::Yield"]
+    I --> J["主调度循环选择下一个未完成任务"]
 ```
 
-这个输入实现是轮询式的。它不是完整键盘中断驱动，但已经符合本章扩展目标：用户态通过 `read` 请求内核提供输入。
+`yield` 的含义不是退出，而是：
 
-## 7. yield 调度路径
+```text
+我暂时让出 CPU，但我的状态要保存，之后还要回来。
+```
+
+## 8. exit 调用链
 
 ```mermaid
 flowchart TD
-    A["用户程序 sched_yield"] --> B["tg_syscall::sched_yield"]
-    B --> C["ecall"]
-    C --> D["TaskControlBlock::handle_syscall"]
-    D --> E["识别 Id::SCHED_YIELD"]
-    E --> F["返回 SchedulingEvent::Yield"]
-    F --> G["main.rs 主循环 break"]
-    G --> H["i = (i + 1) % index_mod"]
-    H --> I["切换到下一个未完成任务"]
+    A["用户程序 exit"] --> B["ecall"]
+    B --> C["TaskControlBlock::handle_syscall"]
+    C --> D["识别 Id::EXIT"]
+    D --> E["返回 SchedulingEvent::Exit(code)"]
+    E --> F["主循环设置 tcb.finish = true"]
+    F --> G["不再恢复该任务"]
+    G --> H["选择下一个未完成任务"]
 ```
 
-这里的调度逻辑很朴素，是 round-robin 轮转。
+`exit` 和 `yield` 的区别：
 
-## 8. 时钟中断调度路径
+```text
+yield：保存现场，以后回来。
+exit：任务结束，不再回来。
+```
+
+## 9. 时钟中断和分时
+
+ch3 从“协作式 yield”进一步走向“分时”。时钟中断让任务即使不主动 yield，也会被内核打断。
 
 ```mermaid
 flowchart TD
-    A["main.rs 设置 tg_sbi::set_timer"] --> B["用户程序运行"]
+    A["设置下一次 timer"] --> B["用户任务运行"]
     B --> C["SupervisorTimer 中断"]
-    C --> D["Trap 回到内核"]
-    D --> E["main.rs 读取 scause"]
-    E --> F["识别 SupervisorTimer"]
-    F --> G["tg_sbi::set_timer(u64::MAX) 清掉本轮定时器"]
-    G --> H["input::refresh"]
-    H --> I["keyboard::refresh 读取 VirtIO Keyboard"]
-    I --> J["break 当前任务执行片段"]
-    J --> K["调度下一个任务"]
+    C --> D["保存 TrapContext"]
+    D --> E["内核识别 scause=SupervisorTimer"]
+    E --> F["重新设置 timer"]
+    F --> G["返回调度循环"]
+    G --> H["选择下一个任务"]
 ```
 
-本次 ch3-snake 把输入刷新也挂到了时间片边界上。这样即使用户态没有立刻主动读取，内核也会周期性缓存一个按键。
+这里 `stvec` 指向 Trap 入口，`scause` 告诉内核这是时钟中断，`sepc` 保存被打断的用户 PC，`sstatus` 保存返回状态。
 
-## 9. trace 练习路径
+## 10. trace 作业调用链
 
 ```mermaid
 flowchart TD
-    A["用户程序 count_syscall / trace_read / trace_write"] --> B["tg_syscall::trace"]
-    B --> C["ecall syscall id = 410"]
-    C --> D["task.rs::handle_syscall 先统计 syscall_count"]
-    D --> E["tg_syscall::handle 分发"]
-    E --> F["main.rs::impls::Trace::trace"]
-    F --> G{"trace_request"}
-    G --> H["0: 读用户地址 1 字节"]
-    G --> I["1: 写用户地址 1 字节"]
-    G --> J["2: 查询 TCB syscall_count"]
+    A["用户 ch3_trace.rs"] --> B["trace_read/trace_write/count_syscall"]
+    B --> C["syscall id = 410"]
+    C --> D["TaskControlBlock::handle_syscall"]
+    D --> E["先 syscall_count[id] += 1"]
+    E --> F["tg_syscall::handle"]
+    F --> G["main.rs::Trace::trace"]
+    G --> H{"trace_request"}
+    H -- "0" --> I["读用户地址 1 字节"]
+    H -- "1" --> J["写用户地址 1 字节"]
+    H -- "2" --> K["查询当前 TCB 的 syscall_count"]
 ```
 
-关键点：
+这说明 trace 的统计应该放在 TCB 里，因为每个任务有自己的 syscall 历史。
+
+## 11. ch3-snake 扩展和基础主线
+
+snake 不是 ch3 基础机制本身，而是用用户态游戏检验：
 
 ```text
-caller.entity 保存了当前 TaskControlBlock 指针。
-trace_request = 2 查询的是当前任务自己的 syscall_count。
+多任务
+系统调用
+输入输出
+分时调度
 ```
 
-## 10. snake 和 snake-ci 的构建选择
-
-```mermaid
-flowchart TD
-    A["cargo run"] --> B["build.rs case_key = ch3"]
-    C["cargo run --features exercise"] --> D["case_key = ch3_exercise"]
-    E["cargo run --features snake"] --> F["case_key = ch3_snake"]
-    G["cargo run --features snake-ci"] --> H["case_key = ch3_snake_ci"]
-    B --> I["cases.toml"]
-    D --> I
-    F --> I
-    H --> I
-```
-
-这样同一个 ch3 内核可以运行不同的用户程序集合：
+图形输出：
 
 ```text
-base: 原始多任务测试
-exercise: trace 作业测试
-snake: 人玩的图形贪吃蛇
-snake-ci: 自动演示/CI 测试
+用户态 SnakeFrame
+  -> write(fd=3)
+  -> 内核 graphics.rs
+  -> VirtIO-GPU
 ```
 
-## 11. 常用命令
+键盘输入：
 
-```powershell
-cd C:\Users\FLY\Desktop\OS\Tg-rCore-Tutorial-2026S-git\tg-rcore-tutorial-ch3
-$env:Path="C:\Program Files\qemu;$env:Path"
-
-# 基础测试
-cargo run
-
-# trace 练习
-cargo run --features exercise
-
-# 可交互图形贪吃蛇
-cargo run --features snake
-
-# 自动测试贪吃蛇
-cargo run --features snake-ci
+```text
+VirtIO-keyboard
+  -> keyboard.rs
+  -> input::take
+  -> read(STDIN)
+  -> 用户态改变方向
 ```
 
-在 GitHub/CNB 的 Linux CI 里，`test.sh` 会自动把 runner 改成 headless 模式：
+这和 Guide 的基础目标一致：用户程序仍然只通过系统调用和内核交互。
 
-```bash
-./test.sh base
-./test.sh exercise
-./test.sh snake
+## 12. ch2 到 ch3 的本质升级
+
+```text
+ch2：内核每次只关心一个 app。
+ch3：内核同时维护多个任务的档案和状态。
+
+ch2：exit 后才进入下一个。
+ch3：yield 或 timer 后就能切换。
+
+ch2：只需要一个当前用户上下文。
+ch3：每个任务都要有自己的上下文和栈。
+```
+
+一句话：
+
+```text
+ch3 的本质是把“程序顺序执行”升级成“任务状态可保存、可切换、可恢复”。
 ```
