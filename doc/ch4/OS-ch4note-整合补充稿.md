@@ -314,3 +314,143 @@ cargo run --features exercise
 - 增加保存最高分。
 - 把 GPU/keyboard 抽象成更通用的设备接口。
 - 把图形帧协议整理成文档，方便后续 ch5/ch6 游戏复用。
+
+## 十五、按 Guide 讲 ch4 的 30 步流程版
+
+这一版用于把 ch4 主线串成可讲述流程。
+
+1. ch2/ch3 已经有用户态、内核态和任务切换。
+2. ch4 发现还缺一个关键问题：内存隔离。
+3. 内核引入地址空间 `AddressSpace`。
+4. 地址空间的核心数据结构是页表。
+5. 页表把虚拟页 VPN 映射到物理页 PPN。
+6. 页表项 PTE 记录有效位和权限位。
+7. 内核先建立自己的内核地址空间。
+8. 内核映射代码段、只读段、数据段和堆。
+9. 内核映射 MMIO 设备地址。
+10. 内核开启 Sv39 分页。
+11. 用户程序以 ELF 形式被内核找到。
+12. 内核解析 ELF 入口地址。
+13. 内核解析 Program Header。
+14. 内核挑出 LOAD 段。
+15. 内核为 LOAD 段计算虚拟页范围。
+16. 内核根据 ELF 权限设置页表权限。
+17. 内核分配物理页帧。
+18. 内核把 ELF 段复制到物理页。
+19. 内核建立用户虚拟页到物理页的映射。
+20. 内核清零 `.bss`。
+21. 内核映射用户栈。
+22. 内核生成进程对应的 `satp`。
+23. 进入用户态前，CPU 使用该进程页表。
+24. 用户程序访问虚拟地址时，MMU 自动翻译。
+25. 用户程序 syscall 传来的指针仍然是虚拟地址。
+26. 内核通过当前进程 AddressSpace 翻译该指针。
+27. 权限不对时，内核拒绝或触发异常处理。
+28. `mmap/munmap/sbrk` 都是在修改页表和地址空间范围。
+29. Tetris 图形帧通过用户虚拟地址传入内核，并经翻译后绘制。
+30. ch4 最终把“程序运行”升级为“进程在独立地址空间中运行”。
+
+## 十六、ch4 和前后章节的连接
+
+```text
+ch3 之前：
+任务切换主要关心上下文和栈。
+
+ch4 之后：
+任务切换还必须关心地址空间和 satp。
+```
+
+ch4 之后我再看 syscall，会多一层意识：
+
+```text
+用户传来的所有地址都不是内核能直接用的地址。
+```
+
+这对后续文件系统、进程、管道都很重要，因为它们都会在用户态和内核态之间传递 buffer。
+
+## 十七、Guide 代码树对照讲解
+
+Guide ch4 的 `mm/` 目录其实是在回答四个问题：
+
+1. 地址如何表示？
+2. 物理页如何分配？
+3. 页表如何建立？
+4. 一个进程的完整地址空间如何管理？
+
+对应到代码树：
+
+```text
+mm/address.rs
+  -> 解决“地址如何表示”
+  -> VirtAddr、PhysAddr、VPN、PPN、页内偏移
+
+mm/frame_allocator.rs
+  -> 解决“物理页从哪里来”
+  -> 分配和回收物理页帧
+
+mm/page_table.rs
+  -> 解决“单个虚拟页如何映射到物理页”
+  -> PTE、map、unmap、translate
+
+mm/memory_set.rs
+  -> 解决“一个进程完整地址空间由哪些区域组成”
+  -> ELF 段、用户栈、TrapContext、mmap、heap
+```
+
+组件化版本的对应关系：
+
+```text
+Guide mm/address.rs + page_table.rs + memory_set.rs
+  -> tg-rcore-tutorial-kernel-vm
+
+Guide frame_allocator.rs + heap_allocator.rs
+  -> tg-rcore-tutorial-kernel-alloc
+
+Guide loader.rs
+  -> build.rs + AppMeta
+
+Guide task 中的 memory_set 字段
+  -> ch4/process.rs 中 Process 保存 AddressSpace
+
+Guide syscall 中的 mmap/munmap/sbrk/read/write
+  -> ch4/main.rs 中 syscall trait 实现
+```
+
+我读组件化仓库时，不能因为 `mm` 目录不在 ch4/src 里就以为没有内存管理。它只是被抽到了 `tg-kernel-vm` 这个 crate 中。
+
+## 十八、ch4 模块何时被调用
+
+```text
+内核刚启动：
+  main.rs 初始化 console/log/heap
+
+准备开启分页：
+  main.rs::kernel_space
+  -> tg-kernel-vm 创建内核 AddressSpace
+  -> 映射内核段和 MMIO
+
+准备运行用户程序：
+  AppMeta 找到 ELF 字节
+  -> process.rs::Process::new
+  -> 解析 ELF
+  -> tg-kernel-vm 建立用户 AddressSpace
+
+用户程序执行：
+  CPU 根据 satp 使用当前进程页表
+
+用户发起 syscall：
+  main.rs syscall impl
+  -> 找当前 Process
+  -> Process.address_space.translate 用户指针
+
+用户请求 mmap/munmap/sbrk：
+  syscall impl 修改当前 Process 的 AddressSpace
+
+Tetris 画图：
+  用户 write(fd=3)
+  -> translate frame 指针
+  -> graphics.rs
+  -> VirtIO-GPU MMIO
+```
+
+这就是 ch4 和 ch2/ch3 最大不同：前面主要保存“执行现场”，ch4 开始还要保存和使用“地址空间现场”。

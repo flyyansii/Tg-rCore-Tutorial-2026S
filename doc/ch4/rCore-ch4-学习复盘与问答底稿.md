@@ -131,3 +131,141 @@ write(fd, buf, len)
 - 在实现 ch4 Tetris 时协助定位 bug，特别是页表开启后访问 VirtIO-GPU MMIO 地址导致 `LoadPageFault` 的问题。
 
 这次最大的收获是：虚拟内存不是一张静态图，而是贯穿“加载程序、进入用户态、系统调用、驱动设备”的完整机制。只要用户态和内核态之间传递地址，就必须考虑地址空间。
+
+## 非问答版流程复盘：ch4 的 30 步学习链
+
+1. 我先从 ch3 的限制出发：多个任务能切换，但内存隔离还不完整。
+2. ch4 引入虚拟地址和物理地址的分离。
+3. 用户程序看到的是虚拟地址。
+4. 真实内存使用的是物理地址。
+5. 地址翻译由 MMU 根据页表自动完成。
+6. RISC-V Sv39 使用三级页表。
+7. `satp` 保存当前根页表的信息。
+8. 切换进程时，切换 `satp` 就是在切换地址空间。
+9. 内核先要建立自己的内核地址空间。
+10. 内核地址空间要映射 `.text/.rodata/.data/.bss/heap`。
+11. 内核还要映射 MMIO 设备地址。
+12. 用户程序以 ELF 形式被嵌入内核。
+13. 内核解析 ELF header，找到入口地址。
+14. 内核遍历 Program Header。
+15. 对每个 LOAD 段，内核读取虚拟地址、文件大小、内存大小和权限。
+16. 内核为 LOAD 段分配物理页。
+17. 内核建立 VPN 到 PPN 的页表映射。
+18. 内核把 ELF 段内容复制到物理页。
+19. 内核清零 `.bss` 对应的内存。
+20. 内核额外映射用户栈。
+21. 内核构造用户 TrapContext 或 ForeignContext。
+22. 用户程序运行时只使用自己的虚拟地址。
+23. 用户发生访存时，MMU 自动查页表。
+24. 用户系统调用传来的指针也是虚拟地址。
+25. 内核不能直接解引用这个指针。
+26. 内核必须用当前进程 AddressSpace 翻译用户指针。
+27. 翻译时还要检查读写权限。
+28. `mmap/munmap/sbrk` 本质都是修改当前进程地址空间。
+29. Tetris 扩展把用户 frame 指针翻译后交给 GPU。
+30. 本章最终让我理解：地址空间影响加载、运行、系统调用和设备访问。
+
+## ch4 最容易错的流程对照
+
+```text
+错误理解：页表只是保护用户程序之间不互相覆盖。
+正确流程：页表同时参与程序加载、用户访存、系统调用指针翻译、设备地址访问。
+
+错误理解：内核可以直接读用户传来的 buf。
+正确流程：buf 是用户虚拟地址，内核必须通过当前进程页表 translate。
+
+错误理解：开启分页只影响用户程序。
+正确流程：开启分页后，内核访问 MMIO 设备也要确保地址在内核页表中有映射。
+
+错误理解：mmap 是直接分配一块物理内存。
+正确流程：mmap 是在虚拟地址范围建立映射，并按权限更新页表。
+```
+
+## Guide 代码树复盘：每个模块在学什么
+
+我需要把 Guide 的 `mm` 目录当成 ch4 的主线，而不是只记住“有页表”三个字。
+
+```text
+mm/address.rs
+  -> 把 usize 地址包装成有意义的类型。
+  -> VirtAddr 表示虚拟地址。
+  -> PhysAddr 表示物理地址。
+  -> VirtPageNum 表示虚拟页号。
+  -> PhysPageNum 表示物理页号。
+  -> 这一步让我知道地址可以拆成页号和页内偏移。
+
+mm/frame_allocator.rs
+  -> 管理物理页帧。
+  -> 用户地址空间每映射一个新页，背后都要有真实物理页。
+  -> 页表本身的中间节点也需要物理页存放。
+
+mm/page_table.rs
+  -> 实现 Sv39 页表。
+  -> PTE 里保存 PPN 和权限位。
+  -> map 建立映射。
+  -> unmap 删除映射。
+  -> translate 查找虚拟地址对应的物理地址。
+
+mm/memory_set.rs
+  -> 管理一个进程完整的地址空间。
+  -> 不只是单页 map，而是把 ELF 段、用户栈、TrapContext、堆、mmap 区域组织起来。
+```
+
+组件化仓库里没有完全同名的 `mm` 目录，是因为这些能力主要在 `tg-rcore-tutorial-kernel-vm` 和 `tg-rcore-tutorial-kernel-alloc` 中：
+
+```text
+Guide 的 MemorySet
+  -> 组件化 AddressSpace
+
+Guide 的 PageTable
+  -> 组件化 mapper/visitor
+
+Guide 的 frame allocator
+  -> 组件化 kernel-alloc
+
+Guide 的 task 中 memory_set 字段
+  -> 组件化 process.rs::Process.address_space
+```
+
+## ch4 模块调用复盘：按运行时间顺序
+
+1. `main.rs::rust_main` 是内核入口，负责初始化。
+2. `kernel_space()` 创建内核自己的地址空间。
+3. `KernelLayout::locate()` 或类似结构定位内核各段。
+4. `AddressSpace` 把 `.text/.rodata/.data/heap` 映射进内核页表。
+5. 内核还要映射 MMIO 设备地址，否则 GPU/keyboard/UART 访问会 PageFault。
+6. `AppMeta::locate()` 找到构建期嵌入的用户 ELF。
+7. `process.rs::Process::new` 开始创建用户进程。
+8. `Process::new` 解析 ELF header，得到入口地址。
+9. `Process::new` 遍历 Program Header。
+10. 对每个 LOAD 段，调用 `AddressSpace` 建立用户虚拟地址映射。
+11. 页表映射时会分配物理页帧。
+12. ELF 段内容被复制到对应物理页。
+13. `.bss` 区域被补零。
+14. 用户栈被映射。
+15. 进程上下文保存该进程的 `satp` 或地址空间信息。
+16. 调度器运行该进程时，让 CPU 使用该进程地址空间。
+17. 用户程序发起 syscall 时，Trap 机制仍然沿用 ch2/ch3。
+18. syscall 处理函数拿到用户传来的虚拟地址。
+19. 内核根据当前进程找到 `AddressSpace`。
+20. `translate` 把用户虚拟地址变成内核可访问地址。
+21. 如果翻译失败，说明用户传了非法地址或权限不对。
+22. `write/read/mmap/munmap/sbrk` 都围绕当前进程地址空间工作。
+23. Tetris 的 `write(fd=3)` 也是这个流程，只是写出的不是字符串而是图形帧。
+24. `graphics.rs` 负责把图形帧转换成 framebuffer。
+25. `keyboard.rs` 负责把 VirtIO-keyboard 事件转换成用户可读输入。
+
+## 我对 ch4 应该形成的最终理解
+
+ch4 不是单独学一个页表数据结构，而是把页表接入整个 OS 流程：
+
+```text
+加载 ELF 需要页表。
+进入用户态需要 satp。
+用户访存需要 MMU。
+系统调用读用户指针需要 translate。
+mmap/munmap/sbrk 需要修改地址空间。
+设备 MMIO 在开启分页后也需要内核页表映射。
+```
+
+这就是为什么 ch4 比前几章抽象：它不是多加一个模块，而是让“地址空间”成为所有模块都必须遵守的新规则。
