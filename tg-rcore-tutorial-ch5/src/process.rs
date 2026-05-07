@@ -50,6 +50,10 @@ pub struct Process {
     pub heap_bottom: usize,
     /// 当前程序 break 位置（堆顶），通过 sbrk 调整
     pub program_brk: usize,
+    /// Stride 调度中的当前累计步长，值越小越优先被调度。
+    pub stride: u128,
+    /// Stride 调度优先级，优先级越大，pass 越小，获得 CPU 的比例越高。
+    pub priority: usize,
 }
 
 impl Process {
@@ -89,6 +93,8 @@ impl Process {
             address_space,
             heap_bottom: self.heap_bottom,
             program_brk: self.program_brk,
+            stride: self.stride,
+            priority: self.priority,
         })
     }
 
@@ -192,6 +198,8 @@ impl Process {
             address_space,
             heap_bottom,
             program_brk: heap_bottom,
+            stride: 0,
+            priority: 16,
         })
     }
 

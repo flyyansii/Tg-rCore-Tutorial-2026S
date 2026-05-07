@@ -40,9 +40,55 @@
 #![cfg_attr(not(target_arch = "riscv64"), allow(dead_code, unused_imports))]
 
 /// 进程模块：定义 Process 结构体及其方法（from_elf、fork、exec 等）
+mod graphics;
+/// 键盘模块：封装 VirtIO-keyboard 轮询，用于 ch5 pingpong 交互。
+mod keyboard;
+/// 进程模块：定义 Process 结构体及其方法（from_elf、fork、exec 等）
 mod process;
 /// 处理器模块：定义 PROCESSOR 全局变量和进程管理器 ProcManager
 mod processor;
+
+mod input {
+    //! Minimal UART and VirtIO-keyboard polling input for the pingpong demo.
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const UART_BASE: usize = 0x1000_0000;
+    const UART_LSR: usize = UART_BASE + 5;
+
+    static LAST_KEY: AtomicUsize = AtomicUsize::new(0);
+
+    fn poll_uart_byte() -> Option<u8> {
+        let lsr = unsafe { (UART_LSR as *const u8).read_volatile() };
+        if lsr & 1 == 0 {
+            None
+        } else {
+            Some(unsafe { (UART_BASE as *const u8).read_volatile() })
+        }
+    }
+
+    /// Poll one byte from UART into the one-byte input buffer if available.
+    pub fn refresh() {
+        crate::keyboard::refresh();
+        if let Some(byte) = poll_uart_byte() {
+            LAST_KEY.store(byte as usize + 1, Ordering::Relaxed);
+        }
+    }
+
+    /// Take the latest buffered input byte, returning `None` when no key was pressed.
+    pub fn take() -> Option<u8> {
+        if let Some(byte) = crate::keyboard::take() {
+            return Some(byte);
+        }
+        refresh();
+        let val = LAST_KEY.swap(0, Ordering::Relaxed);
+        if val == 0 {
+            None
+        } else {
+            Some((val - 1) as u8)
+        }
+    }
+}
 
 #[macro_use]
 extern crate tg_console;
@@ -226,9 +272,16 @@ extern "C" fn rust_main() -> ! {
     tg_syscall::init_scheduling(&SyscallContext);
     tg_syscall::init_clock(&SyscallContext);
     tg_syscall::init_memory(&SyscallContext);
-    // 步骤 8：加载初始进程 initproc
-    // initproc 是所有用户进程的祖先，它会 fork 出 shell 进程
-    let initproc_data = APPS.get("initproc").unwrap();
+    // 步骤 8：加载初始进程。
+    // 测试模式直接启动对应 usertest，默认模式保留给本章的 pingpong 游戏。
+    let initproc_name = match option_env!("CHAPTER") {
+        Some("5") => "ch5_usertest",
+        Some("-5") => "ch5b_usertest",
+        _ => "ch5_pingpong",
+    };
+    let initproc_data = APPS.get(initproc_name).unwrap_or_else(|| {
+        panic!("initial app `{initproc_name}` not found in embedded app list")
+    });
     if let Some(process) = Process::from_elf(ElfFile::new(initproc_data).unwrap()) {
         // 初始化进程管理器并添加 initproc
         PROCESSOR.get_mut().set_manager(ProcManager::new());
@@ -334,6 +387,14 @@ fn kernel_space(layout: tg_linker::KernelLayout, memory: usize, portal: usize) {
     space.map_extern(
         s.floor()..e.ceil(),
         PPN::new(s.floor().val()),
+        build_flags("_WRV"),
+    );
+    // 映射 QEMU virt 平台 MMIO 设备：
+    // UART 0x1000_0000, VirtIO-GPU 0x1000_1000, VirtIO-keyboard 0x1000_2000。
+    let s = VPN::<Sv39>::new(0x1000_0000 >> Sv39::PAGE_BITS);
+    space.map_extern(
+        s..s + 3,
+        PPN::new(0x1000_0000 >> Sv39::PAGE_BITS),
         build_flags("_WRV"),
     );
     // 映射异界传送门页面到虚拟地址空间最高页
@@ -476,6 +537,31 @@ mod impls {
     /// 系统调用上下文，实现 IO、Process、Scheduling、Clock、Memory 等 trait
     pub struct SyscallContext;
 
+    fn mapped(process: &ProcStruct, vpn: VPN<Sv39>) -> bool {
+        const VALID: VmFlags<Sv39> = build_flags("V");
+        process
+            .address_space
+            .translate::<u8>(vpn.base(), VALID)
+            .is_some()
+    }
+
+    fn prot_to_flags(prot: i32) -> Option<VmFlags<Sv39>> {
+        if prot <= 0 || (prot & !0x7) != 0 {
+            return None;
+        }
+        let mut flags: [u8; 5] = *b"U___V";
+        if prot & 0x4 != 0 {
+            flags[1] = b'X';
+        }
+        if prot & 0x2 != 0 {
+            flags[2] = b'W';
+        }
+        if prot & 0x1 != 0 {
+            flags[3] = b'R';
+        }
+        crate::parse_flags(unsafe { core::str::from_utf8_unchecked(&flags) }).ok()
+    }
+
     /// IO 系统调用实现：write 和 read
     impl IO for SyscallContext {
         /// write 系统调用：将数据写入标准输出
@@ -484,6 +570,21 @@ mod impls {
         /// 并检查可读权限后才能访问用户缓冲区。
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             match fd {
+                crate::graphics::GRAPHICS_FD => {
+                    const READABLE: VmFlags<Sv39> = build_flags("RV");
+                    if let Some(ptr) = PROCESSOR
+                        .get_mut()
+                        .current()
+                        .unwrap()
+                        .address_space
+                        .translate::<u8>(VAddr::new(buf), READABLE)
+                    {
+                        crate::graphics::submit_pingpong_frame(ptr.as_ptr() as usize, count)
+                    } else {
+                        log::error!("graphics frame ptr not readable");
+                        -1
+                    }
+                }
                 STDOUT | STDDEBUG => {
                     const READABLE: VmFlags<Sv39> = build_flags("RV");
                     if let Some(ptr) = PROCESSOR
@@ -519,23 +620,23 @@ mod impls {
         #[inline]
         fn read(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             if fd == STDIN {
+                if count == 0 {
+                    return 0;
+                }
                 const WRITEABLE: VmFlags<Sv39> = build_flags("W_V");
-                if let Some(mut ptr) = PROCESSOR
+                if let Some(ptr) = PROCESSOR
                     .get_mut()
                     .current()
                     .unwrap()
                     .address_space
                     .translate::<u8>(VAddr::new(buf), WRITEABLE)
                 {
-                    let mut ptr = unsafe { ptr.as_mut() } as *mut u8;
-                    for _ in 0..count {
-                        let c = tg_sbi::console_getchar() as u8;
-                        unsafe {
-                            *ptr = c;
-                            ptr = ptr.add(1);
-                        }
+                    if let Some(byte) = crate::input::take() {
+                        unsafe { ptr.as_ptr().write_volatile(byte) };
+                        1
+                    } else {
+                        -2
                     }
-                    count as _
                 } else {
                     log::error!("ptr not writeable");
                     -1
@@ -643,14 +744,26 @@ mod impls {
         /// 与 fork+exec 不同，spawn 直接从 ELF 创建新进程，
         /// 无需复制父进程地址空间。
         ///
-        /// TODO: 实现 spawn 系统调用（练习题）
-        fn spawn(&self, _caller: Caller, _path: usize, _count: usize) -> isize {
-            let current = PROCESSOR.get_mut().current().unwrap();
-            tg_console::log::info!(
-                "spawn: parent pid = {}, not implemented",
-                current.pid.get_usize()
-            );
-            -1
+        fn spawn(&self, _caller: Caller, path: usize, count: usize) -> isize {
+            const READABLE: VmFlags<Sv39> = build_flags("RV");
+            let processor: *mut PManager<ProcStruct, ProcManager> = PROCESSOR.get_mut() as *mut _;
+            let current = unsafe { (*processor).current().unwrap() };
+            let parent_pid = current.pid;
+            let Some(ptr) = current.address_space.translate::<u8>(VAddr::new(path), READABLE) else {
+                return -1;
+            };
+            let name = unsafe {
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr.as_ptr(), count))
+            };
+            let Some(data) = APPS.get(name).and_then(|input| ElfFile::new(input).ok()) else {
+                return -1;
+            };
+            let Some(child_proc) = ProcStruct::from_elf(data) else {
+                return -1;
+            };
+            let pid = child_proc.pid;
+            unsafe { (*processor).add(pid, child_proc, parent_pid) };
+            pid.get_usize() as isize
         }
 
         /// sbrk 系统调用：调整进程堆空间大小
@@ -676,17 +789,13 @@ mod impls {
             0
         }
 
-        /// set_priority 系统调用：设置当前进程优先级
-        ///
-        /// TODO: 实现 set_priority 系统调用（练习题：stride 调度算法）
         fn set_priority(&self, _caller: Caller, prio: isize) -> isize {
+            if prio < 2 {
+                return -1;
+            }
             let current = PROCESSOR.get_mut().current().unwrap();
-            tg_console::log::info!(
-                "set_priority: pid = {}, prio = {}, not implemented",
-                current.pid.get_usize(),
-                prio
-            );
-            -1
+            current.priority = prio as usize;
+            prio
         }
     }
 
@@ -726,9 +835,6 @@ mod impls {
 
     /// 内存管理系统调用实现
     impl Memory for SyscallContext {
-        /// mmap 系统调用：映射匿名内存
-        ///
-        /// TODO: 实现 mmap 系统调用（练习题）
         fn mmap(
             &self,
             _caller: Caller,
@@ -739,18 +845,60 @@ mod impls {
             _fd: i32,
             _offset: usize,
         ) -> isize {
-            tg_console::log::info!(
-                "mmap: addr = {addr:#x}, len = {len}, prot = {prot}, not implemented"
-            );
-            -1
+            const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
+            if addr & (PAGE_SIZE - 1) != 0 {
+                return -1;
+            }
+            let Some(flags) = prot_to_flags(prot) else {
+                return -1;
+            };
+            if len == 0 {
+                return 0;
+            }
+            let Some(end_addr) = addr.checked_add(len) else {
+                return -1;
+            };
+            let start = VAddr::<Sv39>::new(addr).floor();
+            let end = VAddr::<Sv39>::new(end_addr).ceil();
+            let Some(process) = PROCESSOR.get_mut().current() else {
+                return -1;
+            };
+            let mut vpn = start;
+            while vpn < end {
+                if mapped(process, vpn) {
+                    return -1;
+                }
+                vpn = vpn + 1;
+            }
+            process.address_space.map(start..end, &[], 0, flags);
+            0
         }
 
-        /// munmap 系统调用：取消内存映射
-        ///
-        /// TODO: 实现 munmap 系统调用（练习题）
         fn munmap(&self, _caller: Caller, addr: usize, len: usize) -> isize {
-            tg_console::log::info!("munmap: addr = {addr:#x}, len = {len}, not implemented");
-            -1
+            const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
+            if addr & (PAGE_SIZE - 1) != 0 {
+                return -1;
+            }
+            if len == 0 {
+                return 0;
+            }
+            let Some(end_addr) = addr.checked_add(len) else {
+                return -1;
+            };
+            let start = VAddr::<Sv39>::new(addr).floor();
+            let end = VAddr::<Sv39>::new(end_addr).ceil();
+            let Some(process) = PROCESSOR.get_mut().current() else {
+                return -1;
+            };
+            let mut vpn = start;
+            while vpn < end {
+                if !mapped(process, vpn) {
+                    return -1;
+                }
+                vpn = vpn + 1;
+            }
+            process.address_space.unmap(start..end);
+            0
         }
     }
 }

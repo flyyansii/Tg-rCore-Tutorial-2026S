@@ -32,6 +32,8 @@ ensure_tg_checker
 # 使用 pipefail 确保管道中任意命令失败都能被捕获
 set -o pipefail
 
+HEADLESS_RUNNER="qemu-system-riscv64 -machine virt -nographic -bios none -kernel"
+
 run_base() {
     echo "运行 ch5 基础测试..."
     cargo clean
@@ -39,7 +41,7 @@ run_base() {
     echo -e "${YELLOW}────────── cargo run 输出 ──────────${NC}"
 
     # 使用 tee 将 cargo run 的输出同时显示在终端和传递给 tg-rcore-tutorial-checker
-    if cargo run 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 5; then
+    if CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER="$HEADLESS_RUNNER" cargo run 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 5; then
         echo ""
         echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
         echo -e "${GREEN}✓ ch5 基础测试通过${NC}"
@@ -60,7 +62,7 @@ run_exercise() {
     export CHAPTER=5
     echo -e "${YELLOW}────────── cargo run --features exercise 输出 ──────────${NC}"
 
-    if cargo run --features exercise 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 5 --exercise; then
+    if CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER="$HEADLESS_RUNNER" cargo run --features exercise 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 5 --exercise; then
         echo ""
         echo -e "${YELLOW}────────── 测试结果 ──────────${NC}"
         echo -e "${GREEN}✓ ch5 练习测试通过${NC}"

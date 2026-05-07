@@ -69,6 +69,13 @@ pub struct ProcManager {
     ready_queue: VecDeque<ProcId>,
 }
 
+const BIG_STRIDE: u128 = 1 << 60;
+
+fn pass(priority: usize) -> u128 {
+    let pass = BIG_STRIDE / priority as u128;
+    if pass == 0 { 1 } else { pass }
+}
+
 impl ProcManager {
     /// 创建新的进程管理器
     pub fn new() -> Self {
@@ -107,8 +114,18 @@ impl Schedule<ProcId> for ProcManager {
         self.ready_queue.push_back(id);
     }
 
-    /// 从就绪队列头部取出下一个要执行的进程
+    /// 从就绪队列中取出 stride 最小的进程，并累加它的 pass。
     fn fetch(&mut self) -> Option<ProcId> {
-        self.ready_queue.pop_front()
+        let (idx, id, _) = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, id)| self.tasks.get(id).map(|task| (idx, *id, task.stride)))
+            .min_by_key(|(_, id, stride)| (*stride, *id))?;
+        let _ = self.ready_queue.remove(idx);
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.stride = task.stride.wrapping_add(pass(task.priority));
+        }
+        Some(id)
     }
 }

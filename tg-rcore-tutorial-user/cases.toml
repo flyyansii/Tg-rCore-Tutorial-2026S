@@ -248,6 +248,11 @@ cases = [
     "initproc",
 ]
 
+[ch5_pingpong]
+cases = [
+    "ch5_pingpong",
+]
+
 [ch6_exercise]
 cases = [
     "00hello_world",

@@ -19,6 +19,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TG_USER_LOCAL_DIR");
     println!("cargo:rerun-if-env-changed=TG_SKIP_USER_APPS");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXERCISE");
+    println!("cargo:rerun-if-env-changed=CHAPTER");
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
@@ -79,10 +80,13 @@ fn build_apps() {
         panic!("failed to parse cases.toml: {err}")
     });
 
+    let chapter = env::var("CHAPTER").unwrap_or_default();
     let case_key = if env::var("CARGO_FEATURE_EXERCISE").is_ok() {
         "ch5_exercise"
-    } else {
+    } else if chapter == "-5" {
         "ch5"
+    } else {
+        "ch5_pingpong"
     };
     let cases = cases_map.remove(case_key).unwrap_or_default();
     let base = cases.base.unwrap_or(0);
