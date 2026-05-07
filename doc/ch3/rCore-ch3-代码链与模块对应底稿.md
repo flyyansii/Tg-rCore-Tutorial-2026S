@@ -631,3 +631,144 @@ sstatus：以什么状态回去。
 10. ch2 没有时间片，ch3 引入 timer 后有时间片。
 11. ch2 是“用户态和内核态往返”，ch3 是“往返之后还能在任务之间切换”。
 12. ch2 为 ch3 提供 ecall/trap 基础，ch3 在此基础上加任务管理。
+
+## 21. 流程再细化：app0 主动 yield 到 app1 的 30 步
+
+这一段专门拆“app0 怎么切到 app1”。它不是概念列表，而是实际发生顺序。
+
+1. app0 当前正在 U-mode 中执行用户代码。
+2. app0 调用用户库里的 `yield()`。
+3. 用户库把 `SYS_SCHED_YIELD` 作为 syscall id。
+4. 用户库把 syscall id 放入 `a7`。
+5. 用户库执行 `ecall`。
+6. CPU 发现 U-mode 发生环境调用。
+7. CPU 把当前用户 PC 写入 `sepc`。
+8. CPU 把 Trap 原因写入 `scause`，原因是 UserEnvCall。
+9. CPU 根据 `stvec` 跳到内核 Trap 入口。
+10. Trap 汇编入口保存 app0 的用户寄存器。
+11. 这些被保存的寄存器形成 app0 的 TrapContext。
+12. 内核进入 Rust 层 trap 处理逻辑。
+13. 内核读取 `scause`，确认这是用户系统调用。
+14. 内核进入当前任务的 `handle_syscall`。
+15. `handle_syscall` 从当前任务上下文读取 `a7`。
+16. `handle_syscall` 确认 syscall id 是 `SCHED_YIELD`。
+17. `handle_syscall` 读取 `a0-a5`，虽然 yield 基本不需要复杂参数。
+18. `tg_syscall::handle` 或 Guide 的 syscall 分发调用 yield 实现。
+19. yield 实现返回一个“当前任务主动让出 CPU”的语义结果。
+20. 内核把 syscall 返回值写回 app0 TrapContext 的 `a0`。
+21. 内核把 app0 TrapContext 的 `sepc += 4`，跳过 `ecall`。
+22. `handle_syscall` 返回 `SchedulingEvent::Yield`。
+23. 主调度循环收到 Yield，不把 app0 标记为 finished。
+24. TaskManager 或调度循环从任务表中寻找下一个未完成任务。
+25. 调度器选中 app1。
+26. 内核准备从 app0 切到 app1。
+27. Guide 标准流程会调用 `__switch(app0_task_cx, app1_task_cx)`。
+28. `__switch` 保存 app0 的 TaskContext，也就是 app0 在内核态切换点的最小现场。
+29. `__switch` 恢复 app1 的 TaskContext。
+30. CPU 根据恢复出的 app1 上下文，进入 app1 的恢复路径或第一次启动路径。
+
+这里 app0 没有消失。它的状态被分成两部分保存：
+
+```text
+app0 用户态现场：TrapContext
+app0 内核切换现场：TaskContext
+```
+
+## 22. 流程再细化：app1 第一次被调度的 28 步
+
+app1 第一次运行时，它从来没被切出去过，所以没有真实历史现场。这里就是“伪造上下文”的用途。
+
+1. 内核初始化任务时发现 app1 是一个新任务。
+2. 内核为 app1 分配或准备用户栈。
+3. 内核确定 app1 的用户入口地址。
+4. 内核在 app1 的内核栈上放一个初始 TrapContext。
+5. 初始 TrapContext 的 `sepc` 设置成 app1 入口。
+6. 初始 TrapContext 的用户 `sp` 设置成 app1 用户栈顶。
+7. 初始 TrapContext 的 `sstatus` 设置成将来 `sret` 回 U-mode。
+8. 初始 TrapContext 的其他寄存器设置成默认值。
+9. 内核再构造 app1 的初始 TaskContext。
+10. 初始 TaskContext 的 `ra` 设置成 `__restore`。
+11. 初始 TaskContext 的 `sp` 指向能找到初始 TrapContext 的位置。
+12. app1 的任务状态被设置成 Ready。
+13. 调度器第一次选中 app1。
+14. `__switch` 从 app1 TaskContext 中恢复 `ra`。
+15. `__switch` 从 app1 TaskContext 中恢复 `sp`。
+16. `__switch` 恢复必要的 callee-saved 寄存器。
+17. `__switch` 执行 `ret`。
+18. 因为 `ra=__restore`，所以 `ret` 跳到 `__restore`。
+19. `__restore` 根据当前栈位置找到初始 TrapContext。
+20. `__restore` 恢复 app1 的用户寄存器。
+21. `__restore` 恢复 `sepc`。
+22. `__restore` 恢复 `sstatus`。
+23. `__restore` 执行 `sret`。
+24. CPU 从 S-mode 回到 U-mode。
+25. PC 变成 app1 入口地址。
+26. app1 从自己的 `_start` 或用户入口开始执行。
+27. 从外面看，app1 像是被正常恢复出来的。
+28. 实际上，这是内核提前布置初始现场的结果。
+
+## 23. 流程再细化：app1 再 yield 后回到 app0 的 30 步
+
+这一条链用来解释“为什么 app0 可以从 yield 后面继续”。
+
+1. app1 在 U-mode 中运行。
+2. app1 调用 `yield()` 或被 timer interrupt 打断。
+3. CPU 进入 S-mode。
+4. Trap 入口保存 app1 用户现场。
+5. app1 的 TrapContext 记录它被打断的位置。
+6. 内核处理 app1 的 yield 或 timer。
+7. 如果是 yield，内核把 app1 的 `sepc += 4`。
+8. 如果是 timer，`sepc` 通常保存被中断时的位置。
+9. 调度器决定切回 app0。
+10. 内核调用 `__switch(app1_task_cx, app0_task_cx)`。
+11. `__switch` 把当前内核 `ra` 保存进 app1 TaskContext。
+12. `__switch` 把当前内核 `sp` 保存进 app1 TaskContext。
+13. `__switch` 保存 app1 的 callee-saved 寄存器。
+14. `__switch` 从 app0 TaskContext 恢复 `ra`。
+15. `__switch` 从 app0 TaskContext 恢复 `sp`。
+16. `__switch` 恢复 app0 的 callee-saved 寄存器。
+17. `__switch` 执行 `ret`。
+18. 这次 app0 不是第一次运行，所以 `ra` 是它上次被切走时保存的返回位置。
+19. `ret` 回到 app0 上次被切走后的内核恢复路径。
+20. 这条路径会继续走向 `__restore` 或组件化 LocalContext 的恢复逻辑。
+21. 恢复逻辑找到 app0 之前保存的 TrapContext。
+22. 恢复逻辑把 app0 的用户寄存器写回 CPU。
+23. 恢复逻辑恢复 app0 的 `sepc`。
+24. 因为 app0 yield 时已经 `sepc += 4`，所以它会从 yield 后面继续。
+25. 恢复逻辑恢复 app0 的 `sstatus`。
+26. 执行 `sret`。
+27. CPU 回到 app0 的 U-mode。
+28. app0 继续执行 yield 后面的下一条用户代码。
+29. 对 app0 来说，它只是“yield 返回了”。
+30. 对内核来说，它完成了一次 app1 到 app0 的上下文恢复。
+
+## 24. timer 分时切换的 26 步流程
+
+timer interrupt 和 yield 的最终目的类似，都是触发调度，但来源不同。
+
+1. 内核启动时初始化时钟中断。
+2. 内核设置下一次 timer 触发时间。
+3. app0 在 U-mode 中运行。
+4. app0 没有主动 yield。
+5. 时间片耗尽。
+6. QEMU/RISC-V timer 产生中断。
+7. CPU 从 U-mode 进入 S-mode。
+8. CPU 设置 `scause=SupervisorTimer` 或对应时钟中断原因。
+9. CPU 保存被打断位置到 `sepc`。
+10. CPU 跳到 `stvec` 指向的 Trap 入口。
+11. Trap 入口保存 app0 用户寄存器。
+12. 内核进入 trap handler。
+13. trap handler 读取 `scause`。
+14. 内核确认这是 timer interrupt，不是普通 syscall。
+15. 内核重新设置下一次 timer。
+16. 内核决定当前任务时间片结束。
+17. 当前任务不标记 finished。
+18. 调度器选择下一个 Ready 任务。
+19. 内核调用任务切换逻辑。
+20. `__switch` 保存当前任务 TaskContext。
+21. `__switch` 恢复下一个任务 TaskContext。
+22. 下一个任务通过 `__restore` 或对应恢复路径回用户态。
+23. 被中断任务的 TrapContext 保留在任务自己的位置。
+24. 将来它再次被调度时，还能从中断点继续。
+25. timer 让内核不依赖用户程序自觉。
+26. 这就是分时系统比协作式调度更可靠的原因。

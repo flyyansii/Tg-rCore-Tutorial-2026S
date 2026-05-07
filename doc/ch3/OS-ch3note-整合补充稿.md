@@ -465,3 +465,47 @@ __restore = 回用户态
 ```
 
 如果我能把这些公式串成 app0 到 app1 再回 app0 的故事，就说明 ch3 主线基本真正理解了。
+
+## 二十、按 Guide 讲 ch3 的 30 步流程版
+
+这一版适合放入正式笔记，用来说明 ch3 从 ch2 的“批处理”如何变成“分时多任务”。
+
+1. ch2 已经能让用户程序通过 `ecall` 进入内核。
+2. ch3 复用这套 Trap/syscall 基础。
+3. ch3 先把多个用户程序都编译并嵌入内核。
+4. 内核启动后找到所有 app。
+5. 内核不再只准备当前 app，而是为每个 app 建立任务结构。
+6. 每个任务对应一个 TCB。
+7. TCB 保存用户上下文、栈、状态和统计信息。
+8. 多个 TCB 交给 TaskManager 管。
+9. TaskManager 记录当前运行任务编号。
+10. TaskManager 查找下一个可运行任务。
+11. app0 第一次运行前，内核构造初始 TrapContext。
+12. 初始 TrapContext 指向 app0 用户入口。
+13. 内核构造初始 TaskContext，让 `ra` 指向 `__restore`。
+14. `__switch` 第一次切到 app0。
+15. `ret` 跳到 `__restore`。
+16. `__restore` 恢复初始 TrapContext。
+17. `sret` 进入 app0 用户态。
+18. app0 调用 `yield`。
+19. `yield` 通过 `ecall` 触发 Trap。
+20. Trap 入口保存 app0 TrapContext。
+21. syscall 分发识别 `SCHED_YIELD`。
+22. 内核修改返回值和 `sepc`。
+23. 调度器选择 app1。
+24. `__switch` 保存 app0 TaskContext。
+25. `__switch` 恢复 app1 TaskContext。
+26. app1 通过初始上下文或历史上下文进入用户态。
+27. app1 之后 yield 或被 timer 打断。
+28. 内核保存 app1 上下文，并恢复 app0 上下文。
+29. app0 通过保存的 TrapContext 从 yield 后面继续。
+30. 多个任务就这样被轮流推进。
+
+这一整条链有两个关键“保存点”：
+
+```text
+TrapContext 保存用户态被打断的位置。
+TaskContext 保存内核态切换任务的位置。
+```
+
+如果只保存 TrapContext，内核不知道怎么回到某个任务的调度恢复路径；如果只保存 TaskContext，用户程序的寄存器和 PC 会丢。两者一起，任务才能真正“暂停后恢复”。
