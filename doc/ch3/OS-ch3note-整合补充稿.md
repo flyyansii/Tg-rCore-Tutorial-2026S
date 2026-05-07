@@ -348,3 +348,120 @@ timer 强制切换
 ```text
 ch3 的核心是让每个用户程序都变成一个可暂停、可保存、可恢复的任务，并由内核调度器在多个任务之间轮转。
 ```
+
+## 十六、ch3 整合版细节清单：35 个必须能讲清楚的点
+
+1. ch2 是批处理，当前 app 不退出，后面的 app 不能运行。
+2. ch3 是多道程序，多个 app 都被内核包装成任务。
+3. 单核下 ch3 是并发，不是真并行。
+4. 并发依赖保存现场和恢复现场。
+5. 每个任务有一个 TCB。
+6. TCB 保存任务上下文、栈、状态、计数等信息。
+7. 多个 TCB 需要 TaskManager 管理。
+8. TaskManager 记录当前任务是谁。
+9. TaskManager 根据状态选择下一个任务。
+10. `finish=false` 表示任务还可以运行。
+11. `finish=true` 表示任务已经退出或被杀死。
+12. 每个任务要有独立用户栈。
+13. 用户栈用于函数调用、局部变量和返回地址。
+14. TrapContext 保存用户态被打断时的现场。
+15. TrapContext 由 `ecall/异常/中断` 触发保存。
+16. TaskContext 保存内核态任务切换现场。
+17. TaskContext 由 `__switch` 保存和恢复。
+18. TrapContext 解决“用户态怎么回来”。
+19. TaskContext 解决“任务之间怎么切换回来”。
+20. 第一次运行任务时没有真实历史现场。
+21. 内核提前构造初始 TrapContext。
+22. 初始 TrapContext 指向用户程序入口。
+23. 初始 TrapContext 设置用户栈和 U-mode 返回状态。
+24. 内核提前构造初始 TaskContext。
+25. 初始 TaskContext 的 `ra` 指向 `__restore`。
+26. 第一次 `__switch` 后会 `ret` 到 `__restore`。
+27. `__restore` 恢复 TrapContext 并 `sret` 进入用户态。
+28. `yield` 是用户主动让出 CPU。
+29. timer interrupt 是内核强制夺回 CPU。
+30. `exit` 表示任务结束，不再恢复。
+31. `write` 属于 IO syscall，Guide 中在 `fs.rs`。
+32. `yield/exit` 属于进程控制 syscall，Guide 中在 `process.rs`。
+33. 组件化版本用 `tg_syscall` 和 trait 实现替代文件拆分。
+34. trace 统计必须放进 TCB，否则不同任务会混在一起。
+35. ch3 的最终目标是任务可暂停、可切换、可恢复。
+
+## 十七、app0 到 app1 再回 app0 的整合链
+
+```text
+app0 用户态运行
+  -> app0 yield
+  -> ecall
+  -> CPU 跳到 stvec
+  -> 保存 app0 TrapContext
+  -> trap_handler 识别 syscall
+  -> syscall/process 语义：yield
+  -> sepc += 4
+  -> 调度器选择 app1
+  -> __switch 保存 app0 TaskContext
+  -> __switch 恢复 app1 TaskContext
+  -> app1 第一次：ra 指向 __restore
+  -> __restore 恢复 app1 初始 TrapContext
+  -> sret 进入 app1 用户态
+```
+
+app1 之后再 yield：
+
+```text
+app1 保存 TrapContext
+  -> __switch 保存 app1 TaskContext
+  -> 恢复 app0 TaskContext
+  -> 回到 app0 的内核恢复路径
+  -> __restore 恢复 app0 TrapContext
+  -> sret 回 app0 用户态
+  -> app0 从 yield 后面继续
+```
+
+这个链条说明：app0 能回来，不是因为它一直在后台偷偷跑，而是因为它的两类现场都被保存了。
+
+## 十八、Guide 代码树和组件化仓库的整合理解
+
+```text
+Guide loader.rs
+  -> 负责把 app 加载到不同地址
+  -> 当前仓库由 build.rs/AppMeta/main.rs 分担
+
+Guide task/task.rs
+  -> 定义 TaskControlBlock 和 TaskStatus
+  -> 当前仓库主要在 src/task.rs
+
+Guide task/mod.rs
+  -> TaskManager、run_first_task、run_next_task
+  -> 当前仓库由全局任务数组和调度循环体现
+
+Guide task/context.rs + switch.S
+  -> TaskContext 和 __switch
+  -> 当前仓库由 tg-kernel-context 封装部分上下文执行
+
+Guide trap/context.rs + trap.S
+  -> TrapContext、__alltraps、__restore
+  -> 当前仓库由 LocalContext 和执行返回路径封装
+
+Guide syscall/fs.rs/process.rs
+  -> write/read 与 exit/yield
+  -> 当前仓库由 tg_syscall 和 main.rs trait impl 完成
+```
+
+所以 ch3 不是“文件少所以机制少”，而是“教学版拆开讲，组件化版封装复用”。
+
+## 十九、我给自己的 ch3 复习公式
+
+```text
+TrapContext = 用户态现场
+TaskContext = 内核切换现场
+TCB = 一个任务的档案
+TaskManager = 所有任务的管理员
+yield = 主动让 CPU
+timer = 强制抢 CPU
+exit = 结束任务
+__switch = 换任务
+__restore = 回用户态
+```
+
+如果我能把这些公式串成 app0 到 app1 再回 app0 的故事，就说明 ch3 主线基本真正理解了。

@@ -322,3 +322,97 @@ ch2 还没有页表，所以运行地址基本就是物理地址。
 ```text
 ch2 让内核第一次真正成为用户程序的执行环境：它能加载用户程序，切到 U-mode 执行，处理 ecall，再根据 exit 顺序执行下一个程序。
 ```
+
+## 11. 细化版：从源码到运行的 32 个步骤
+
+下面这一段是给自己讲课时用的“慢动作版本”。它不追求短，而是把每一步都拆开，方便我对着 Guide 和组件化代码树逐项解释。
+
+1. `user/src/bin/*.rs` 是用户程序源码，每个文件可以理解成一个独立应用。
+2. 用户程序不是直接依赖 Rust 标准库，而是依赖 `user_lib` 这层最小用户态运行库。
+3. `user_lib` 提供 `_start` 或 `#[start]`，所以用户程序不是一进来就运行 `main`。
+4. `_start` 先清理用户程序自己的 `.bss`，保证未初始化全局变量从 0 开始。
+5. `_start` 再调用用户写的 `main()`，这才进入真正的应用逻辑。
+6. 用户 `main()` 返回后，`user_lib` 会自动调用 `exit(code)`，不让 CPU 乱跑。
+7. 构建内核时，`build.rs` 会根据 `cases.toml` 确定本章要打包哪些用户程序。
+8. 每个用户程序会被编译成 RISC-V 裸机目标上的 ELF 或二进制内容。
+9. `build.rs` 生成类似 Guide 中 `link_app.S` 的汇编文件，在组件化版本里表现为 `app.asm`。
+10. `app.asm` 用 `.incbin` 把用户程序字节原样塞进内核镜像。
+11. 这些字节此时还不是“正在运行的用户程序”，只是“被存放在内核镜像里的数据”。
+12. `app.asm` 还会记录每个 app 的起止边界，例如 `app_0_start`、`app_0_end`。
+13. `main.rs` 通过 `global_asm!(APP_ASM)` 把这个自动生成的汇编文件纳入最终链接。
+14. 链接完成后，内核镜像里同时包含内核代码、内核数据、用户 app 的二进制字节。
+15. QEMU 启动后先执行内核入口，ch1 的 `_start/linker/SBI` 机制仍然是基础。
+16. 内核初始化 `.bss`、console、日志和 syscall 处理环境。
+17. 内核运行时通过 `AppMeta::locate()` 找到构建期嵌入进来的 app 元数据。
+18. `AppMeta` 告诉内核：有几个 app，每个 app 在内核镜像中的字节边界在哪里。
+19. 对于 app0，内核先根据 `app_0_start..app_0_end` 取出它的原始字节。
+20. 内核把这段字节复制到约定运行地址，例如 `base + 0 * step`。
+21. ch2 还没有页表，所以这里的运行地址基本就是物理地址，不存在虚拟地址翻译。
+22. 复制完成后，内核构造用户态上下文，入口 PC 指向 app 的运行地址。
+23. 用户态上下文还要设置特权状态，让 `sret` 后 CPU 进入 U-mode 而不是继续留在 S-mode。
+24. 用户栈也要被设置好，否则 app 一调用函数或保存局部变量就会出问题。
+25. 内核执行 `ctx.execute()` 或 Guide 中的 `__restore/sret` 路径，把控制权交给用户程序。
+26. app 在 U-mode 中运行，不能直接访问内核函数，也不能直接碰 SBI 或硬件。
+27. app 要打印时，`println!` 会走到用户态 `sys_write` 包装函数。
+28. `sys_write` 把 syscall id 放入 `a7`，把 `fd/buf/len` 放入 `a0/a1/a2`。
+29. app 执行 `ecall` 后，CPU 根据 `stvec` 跳到内核 Trap 入口。
+30. Trap 入口保存用户寄存器到 TrapContext 或组件化 `LocalContext` 中，防止用户现场丢失。
+31. 内核读取 `scause` 知道这是 UserEnvCall，再读取 `a7` 知道它请求 `write`。
+32. `write` 输出完成后，内核把返回值写回 `a0`，把 `sepc += 4`，最后 `sret` 回用户程序。
+
+如果系统调用是 `exit`，第 32 步不同：内核不会再返回当前 app，而是标记当前应用结束，加载下一个 app。
+
+## 12. 更细的模块职责表
+
+| 模块或文件 | Guide 里的角色 | 组件化仓库里的对应 | 我应该怎么讲 |
+| --- | --- | --- | --- |
+| `user/src/bin/*.rs` | 用户应用 | `tg-rcore-tutorial-user/src/bin/*.rs` | 真正被内核运行的应用程序，不是内核代码 |
+| `user/src/lib.rs` | 用户库入口 | 同名用户库 crate | 提供 `_start -> main -> exit` 的生命周期 |
+| `user/src/syscall.rs` | 发起系统调用 | 同名用户库 syscall 包装 | 负责把 id 和参数放寄存器，然后 `ecall` |
+| `os/build.rs` | 生成 app 链接信息 | `tg-rcore-tutorial-ch2/build.rs` | 构建期把 app 变成内核镜像中的数据 |
+| `link_app.S` | 嵌入 app 二进制 | 自动生成 `app.asm` | 用 `.incbin` 把 app 字节塞进内核 |
+| `batch.rs` | 批处理管理 | `main.rs + AppMeta` | 找 app、复制 app、进入 app、处理 app 结束 |
+| `trap.S` | 保存/恢复 TrapContext | `tg-kernel-context` | 保存用户现场，处理完再回用户态 |
+| `trap/mod.rs` | trap 分发处理 | `main.rs` 调度和 `handle_syscall` | 根据 `scause` 判断 ecall/异常 |
+| `syscall/mod.rs` | syscall 总分发 | `tg_syscall::handle` | 根据 syscall id 调不同实现 |
+| `syscall/fs.rs` | write/read | `impl IO for SyscallContext` | 用户打印最终走这里 |
+| `syscall/process.rs` | exit/yield | `impl Process/Scheduling` | 控制应用生命周期 |
+| `console.rs` | 内核输出 | `tg-console/tg-sbi` | 最终调用 SBI 或 console putchar |
+
+## 13. `sys_write` 的寄存器级慢动作
+
+以用户程序执行 `println!("hello")` 为例：
+
+1. `println!` 先把格式化结果交给用户态 `console::Stdout`。
+2. `Stdout::write_str` 调用 `write(fd=1, buf, len)`。
+3. `write` 再调用 `sys_write`。
+4. `sys_write` 调用通用 `syscall(SYS_WRITE, [fd, buf, len])`。
+5. 内联汇编把 `SYS_WRITE` 放进 `a7`。
+6. 内联汇编把 `fd` 放进 `a0`，一般 `1` 表示 stdout。
+7. 内联汇编把字符串缓冲区地址放进 `a1`。
+8. 内联汇编把字符串长度放进 `a2`。
+9. `ecall` 触发从 U-mode 到 S-mode 的 Trap。
+10. CPU 自动设置 `sepc/scause/sstatus` 等 CSR。
+11. Trap 入口把普通寄存器也保存起来，形成 TrapContext。
+12. 内核读取 `a7=SYS_WRITE`，知道这是写操作。
+13. 内核读取 `a0/a1/a2`，知道写哪个 fd、从哪里读用户数据、读多少。
+14. ch2 没有页表隔离，所以读取用户 buffer 比 ch4 以后简单。
+15. 内核把用户 buffer 中的字节交给 console。
+16. console 再通过 SBI 或串口输出到 QEMU 终端。
+17. 内核把写入长度或成功返回值写回 `a0`。
+18. 内核把 `sepc += 4`，让用户程序跳过刚才那条 `ecall`。
+19. `sret` 恢复到 U-mode。
+20. 用户程序从 `sys_write` 返回，继续执行下一行代码。
+
+## 14. ch2 和后续章节的关系
+
+1. ch2 第一次区分了“内核代码”和“用户程序”。
+2. ch2 第一次建立了 U-mode 和 S-mode 的往返路径。
+3. ch2 的 app 仍然是顺序执行，所以还没有真正的任务调度。
+4. ch2 的地址仍然比较“直给”，因为没有页表。
+5. ch3 会把“当前 app”扩展成“多个任务的 TCB 数组”。
+6. ch4 会把“直接物理地址”扩展成“用户虚拟地址到物理地址的页表映射”。
+7. ch5 会把“顺序 app”扩展成“进程和父子关系”。
+8. ch6 会把“程序构建期嵌入”扩展成“从文件系统加载/访问文件”。
+
+所以 ch2 是后面所有章节的第一条地基：没有 ch2 的 Trap/syscall/user runtime，就没有后面的多任务、地址空间和文件系统。

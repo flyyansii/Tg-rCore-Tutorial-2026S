@@ -420,3 +420,214 @@ ch3：每个任务都要有自己的上下文和栈。
 ```text
 ch3 的本质是把“程序顺序执行”升级成“任务状态可保存、可切换、可恢复”。
 ```
+
+## 13. 细化版：ch3 从启动到调度的 35 个步骤
+
+这一段专门用来补足“流程还能更细”的部分。它把 ch3 拆成比 Guide 更慢的讲法。
+
+1. ch3 仍然沿用 ch2 的用户程序构建方式：用户 app 会在构建期被编译并嵌入内核镜像。
+2. 不同之处是，ch2 运行一个 app 时才加载一个；ch3 初始化时就会为多个 app 准备任务结构。
+3. 内核启动后先完成 ch1/ch2 已有的基础初始化，例如 `.bss`、console、日志、syscall 环境。
+4. `AppMeta::locate()` 找到所有被嵌入的用户程序。
+5. 内核依次读取每个 app 的起止边界，知道它们的二进制内容在哪里。
+6. 每个 app 会被复制到自己的运行区域，避免多个 app 覆盖同一个地址。
+7. 对每个 app，内核创建一个 `TaskControlBlock`，即 TCB。
+8. TCB 里至少保存用户上下文、用户栈、结束标记、系统调用计数。
+9. 用户栈必须每个任务一份，否则 app0 和 app1 的函数调用、局部变量会互相踩。
+10. `TaskControlBlock::init(entry)` 会把上下文设置为“将来从 entry 进入用户态”。
+11. `LocalContext::user(entry)` 或 Guide 中的 `TrapContext::app_init_context` 设置初始用户 PC。
+12. 初始用户栈指针 `sp` 被设置到该任务用户栈顶部。
+13. `finish=false` 表示任务还没退出，可以被调度。
+14. `syscall_count` 清零，给 ch3 trace 作业统计当前任务自己的 syscall 次数。
+15. 所有 TCB 组成任务表，Guide 中由 `TaskManager` 管理。
+16. 组件化版本里虽然没有单独 `TaskManager` 文件，但全局任务数组、当前下标、调度循环共同承担这个职责。
+17. 调度器从当前下标开始找一个 `finish=false` 的任务。
+18. 找到任务后，内核恢复它的上下文并进入用户态。
+19. app 在 U-mode 运行，和 ch2 一样不能直接访问内核。
+20. app 主动调用 `yield` 时，会通过用户态 syscall 包装执行 `ecall`。
+21. `ecall` 让 CPU 从 U-mode 切到 S-mode，并跳到 Trap 入口。
+22. Trap 入口保存用户态现场，这份现场就是 TrapContext 语义。
+23. 内核通过 `scause` 确认这是 UserEnvCall。
+24. 内核读取 `a7` 得到 syscall id，例如 `SCHED_YIELD`。
+25. `TaskControlBlock::handle_syscall` 从当前任务上下文中读取 syscall id 和参数。
+26. `tg_syscall::handle` 或 Guide 的 `syscall/mod.rs` 分发到具体 syscall 实现。
+27. 如果是 `yield`，syscall 层返回“让出 CPU”的语义事件。
+28. `handle_syscall` 把 `sepc += 4`，保证之后不会重复执行同一个 `ecall`。
+29. 主调度循环收到 `SchedulingEvent::Yield`，不结束当前任务，只是选择下一个任务。
+30. 如果是 Guide 标准实现，这里会调用 `__switch` 保存当前任务 TaskContext，恢复下一个任务 TaskContext。
+31. 如果下一个任务第一次运行，它的 TaskContext 是内核提前伪造的，`ra` 指向 `__restore`。
+32. `__restore` 再恢复提前放好的初始 TrapContext，最后 `sret` 进入该 app 用户态。
+33. 如果下一个任务不是第一次运行，`__switch` 会恢复它上次被切走时保存的 TaskContext。
+34. 恢复 TaskContext 后会回到该任务上次切出后的内核恢复路径，再通过 TrapContext 回用户态。
+35. 这样 app0、app1、app2 就可以轮流执行，而且每个 app 都能从上次暂停的位置继续。
+
+## 14. TaskManager 的 10 个具体职责
+
+旧文档只说了 TaskManager 管理任务状态，这里进一步展开。
+
+1. 保存所有 TCB，也就是所有任务的档案。
+2. 记录当前正在运行或刚刚运行的是哪个任务。
+3. 初始化每个任务的用户栈和入口上下文。
+4. 判断任务是否已经退出，避免再次调度 finished task。
+5. 在 `yield` 后选择下一个 Ready 任务。
+6. 在 `exit` 后标记当前任务结束，并选择下一个任务。
+7. 在时钟中断后强制切走当前任务，实现分时。
+8. 在任务第一次运行时提供初始上下文。
+9. 在任务再次运行时依赖保存的上下文恢复现场。
+10. 最终在所有任务结束后通知内核关机或进入后续 demo。
+
+可以把它类比成一个“宿舍值班表管理员”：
+
+```text
+TCB 是每个人的档案。
+TaskManager 是拿着档案和排班表的人。
+__switch 是真正把值班人从 A 换成 B 的动作。
+TrapContext 是每个人离开座位前桌面上摊开的作业状态。
+```
+
+## 15. TrapContext 慢动作：什么时候保存，保存后去哪
+
+以 app0 执行 `yield` 为例：
+
+1. app0 在 U-mode 运行。
+2. app0 调用 `yield()`。
+3. 用户库把 syscall id 和参数放进寄存器。
+4. app0 执行 `ecall`。
+5. CPU 发现这是从 U-mode 发出的环境调用。
+6. CPU 切到 S-mode。
+7. CPU 把当前 PC 写入 `sepc`。
+8. CPU 把 Trap 原因写入 `scause`。
+9. CPU 根据 `stvec` 跳到内核 Trap 入口。
+10. Trap 汇编入口保存通用寄存器。
+11. 保存结果形成 TrapContext。
+12. 内核进入 Rust 层 `trap_handler` 或组件化 `handle_syscall`。
+13. 内核读取 TrapContext 中的 `a7/a0-a5`。
+14. 内核处理 syscall。
+15. 内核把 syscall 返回值写回 TrapContext 的 `a0`。
+16. 内核把 TrapContext 的 `sepc += 4`。
+17. 如果继续当前任务，`__restore` 直接从这个 TrapContext 恢复。
+18. 如果切到别的任务，这个 TrapContext 留在 app0 对应位置，等 app0 以后恢复时再用。
+
+所以 TrapContext 的核心是：
+
+```text
+保存用户态暂停点。
+让内核处理完还能回到这个用户态暂停点之后。
+```
+
+## 16. TaskContext 慢动作：`__switch` 到底保存了什么
+
+TaskContext 不负责保存所有用户寄存器，它只保存“内核态切换任务所需的最小现场”。
+
+以 `__switch(app0, app1)` 为例：
+
+1. 此时 CPU 已经在 S-mode。
+2. app0 的用户现场已经通过 TrapContext 保存好了。
+3. 调度器决定不继续 app0，而是运行 app1。
+4. 内核调用 `__switch(&mut app0.task_cx, &app1.task_cx)`。
+5. `__switch` 把当前内核的 `ra` 保存到 app0 的 TaskContext。
+6. `__switch` 把当前内核的 `sp` 保存到 app0 的 TaskContext。
+7. `__switch` 保存 `s0-s11` 这类 callee-saved 寄存器。
+8. `__switch` 从 app1 的 TaskContext 中加载 `ra`。
+9. `__switch` 从 app1 的 TaskContext 中加载 `sp`。
+10. `__switch` 从 app1 的 TaskContext 中加载 `s0-s11`。
+11. `__switch` 执行 `ret`。
+12. `ret` 会跳到刚刚恢复出来的 `ra`。
+13. 如果 app1 是第一次运行，`ra` 是伪造好的 `__restore` 地址。
+14. 如果 app1 不是第一次运行，`ra` 是它上次被切走时保存的返回位置。
+
+这就是你之前问的“为什么 TaskContext 在 switch 之后自动变了”：因为 `__switch` 是汇编，它直接往 TaskContext 指针指向的内存里写寄存器值。
+
+## 17. 第一次运行任务的伪造上下文再解释
+
+第一次运行任务时，问题是：
+
+```text
+app0 从来没被切走过，哪里来的 TaskContext？
+app0 从来没 Trap 过，哪里来的 TrapContext？
+```
+
+内核的做法是提前布置：
+
+1. 在该任务内核栈上放一个初始 TrapContext。
+2. 初始 TrapContext 的 `sepc` 设置成用户程序入口。
+3. 初始 TrapContext 的 `sp` 设置成用户栈顶。
+4. 初始 TrapContext 的 `sstatus` 设置成 `sret` 后回 U-mode。
+5. 该任务 TaskContext 的 `ra` 设置为 `__restore`。
+6. 该任务 TaskContext 的 `sp` 指向刚才放 TrapContext 的内核栈位置。
+7. 第一次 `__switch` 到该任务时恢复 `ra/sp`。
+8. `ret` 跳到 `__restore`。
+9. `__restore` 以为自己正在恢复一个真实 TrapContext。
+10. `sret` 进入用户程序。
+
+所以“伪造”不是乱给地址，而是提前把启动新任务伪装成“恢复旧任务”。这样第一次运行和后续恢复可以复用同一套代码路径。
+
+## 18. ch3 syscall 分类和 Guide 文件对应
+
+Guide 写法：
+
+```text
+syscall/mod.rs
+  -> syscall(id, args)
+  -> match id
+
+syscall/fs.rs
+  -> sys_write
+  -> sys_read
+
+syscall/process.rs
+  -> sys_exit
+  -> sys_yield
+  -> sys_get_time
+```
+
+组件化写法：
+
+```text
+task.rs::TaskControlBlock::handle_syscall
+  -> 从 LocalContext 读 a7/a0-a5
+  -> tg_syscall::handle
+  -> main.rs 里不同 trait impl 处理
+```
+
+对应关系：
+
+1. `IO::write` 相当于 Guide 的 `syscall/fs.rs::sys_write`。
+2. `Process::exit` 相当于 Guide 的 `syscall/process.rs::sys_exit`。
+3. `Scheduling::sched_yield` 相当于 Guide 的 `syscall/process.rs::sys_yield`。
+4. `Clock::clock_gettime` 相当于 Guide 的 `sys_get_time`。
+5. `Trace::trace` 是本课程组件化实验新增练习接口。
+
+## 19. CSR 在 ch3 中的角色
+
+1. `stvec`：Trap 入口地址。没有它，用户 `ecall` 后不知道跳到内核哪里。
+2. `sepc`：用户程序被打断的位置。恢复用户态时靠它继续执行。
+3. `scause`：Trap 原因。内核靠它区分 syscall、非法指令、访存错误、时钟中断。
+4. `sstatus`：保存特权级和中断状态。`sret` 靠它回到正确模式。
+5. `sie/sip`：和中断使能、挂起有关，分时系统会涉及。
+6. `time`：读当前时间。
+7. `stimecmp` 或 SBI timer：设置下一次时钟中断。
+
+记法：
+
+```text
+stvec：去哪里处理。
+scause：为什么来处理。
+sepc：处理完回哪里。
+sstatus：以什么状态回去。
+```
+
+## 20. ch3 和 ch2 对比的 12 个层层深入点
+
+1. ch2 只有“当前 app”，ch3 有“任务表”。
+2. ch2 app 结束后才切换，ch3 app 未结束也能切换。
+3. ch2 不需要保存多个任务现场，ch3 必须保存。
+4. ch2 主要依赖 TrapContext，ch3 还要理解 TaskContext。
+5. ch2 的 `exit` 是主线，ch3 的 `yield/timer` 是主线。
+6. ch2 的批处理像“排队做完一个再下一个”，ch3 像“每个人做一会儿轮换”。
+7. ch2 的用户栈可以相对简单，ch3 每个任务都必须有独立用户栈。
+8. ch2 出错就杀掉当前 app 后继续下一个，ch3 出错还要维护任务状态。
+9. ch2 的 syscall 返回当前 app，ch3 的 syscall 可能触发调度。
+10. ch2 没有时间片，ch3 引入 timer 后有时间片。
+11. ch2 是“用户态和内核态往返”，ch3 是“往返之后还能在任务之间切换”。
+12. ch2 为 ch3 提供 ecall/trap 基础，ch3 在此基础上加任务管理。

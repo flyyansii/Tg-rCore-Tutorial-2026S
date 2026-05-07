@@ -295,3 +295,169 @@ handle_syscall 读取 syscall_id
 10. app0 如何切到 app1 后还能回来。
 11. syscall 如何经过 fs/process 分发。
 12. trace 为什么要在 TCB 里统计。
+
+## 15. 扩展问答：ch3 的 35 个细节问题
+
+### 1. ch3 为什么说是“多道程序”？
+
+因为内核同时维护多个用户程序的运行状态。虽然单核 CPU 同一瞬间只能执行一个任务，但内核可以在多个任务之间切换。
+
+### 2. ch3 是并行吗？
+
+不是。单核 QEMU 下更准确是并发。并行是多个 CPU 真同时执行；并发是快速切换，让多个任务都能推进。
+
+### 3. ch2 的批处理哪里不够？
+
+如果 app0 长时间不退出，app1 永远没机会运行。ch3 通过 `yield` 和 timer 解决这个问题。
+
+### 4. `yield` 和 `exit` 的根本区别是什么？
+
+`yield` 是暂停，保留现场；`exit` 是结束，释放或废弃现场。
+
+### 5. 为什么有了 `yield` 还要 timer？
+
+因为不能完全相信用户程序主动配合。timer 让内核拥有强制夺回 CPU 的能力。
+
+### 6. TCB 是什么？
+
+TCB 是一个任务的档案袋，里面放任务上下文、栈、状态、统计信息等。
+
+### 7. TaskManager 是什么？
+
+TaskManager 是任务档案管理员。它不是单个任务，而是管理所有 TCB、当前任务下标和调度策略。
+
+### 8. 当前组件化仓库没有 `TaskManager` 文件怎么办？
+
+不能说没有 TaskManager 概念。当前仓库把它拆到全局任务数组、调度循环和 `TaskControlBlock` 方法里了。
+
+### 9. TCB 和 TaskManager 的关系？
+
+TCB 是“一个任务的档案”，TaskManager 是“管理所有档案并决定谁运行的人”。
+
+### 10. 每个任务为什么要有自己的用户栈？
+
+函数调用、局部变量、返回地址都要用栈。如果多个任务共用栈，切换后数据会互相覆盖。
+
+### 11. TrapContext 是保存用户现场的吗？
+
+是。它保存用户态被 `ecall/中断/异常` 打断时的现场。
+
+### 12. TaskContext 是保存用户现场的吗？
+
+不是。TaskContext 保存的是内核态任务切换所需的现场，例如 `ra/sp/s0-s11`。
+
+### 13. 为什么需要两种 Context？
+
+因为有两种切换：用户态到内核态需要 TrapContext；内核在任务之间切换需要 TaskContext。
+
+### 14. TrapContext 由谁保存？
+
+在 Guide 中通常由 `trap.S::__alltraps` 保存；组件化版本中由 `tg-kernel-context::LocalContext` 封装了类似能力。
+
+### 15. TaskContext 由谁保存？
+
+由 `task/switch.S::__switch` 保存。它是汇编级别直接读写寄存器和内存。
+
+### 16. 第一次进入任务为什么没有真实 TaskContext？
+
+因为任务以前从没运行过，也就没有“上次被切走时的现场”。
+
+### 17. 那第一次怎么运行？
+
+内核伪造一个初始 TaskContext，让它的 `ra` 指向 `__restore`，再准备一个初始 TrapContext。
+
+### 18. `ra -> __restore` 是什么意思？
+
+`__switch` 恢复寄存器后会 `ret`，而 `ret` 跳到 `ra`。把 `ra` 设成 `__restore`，就能让第一次切换后自动进入恢复用户态的流程。
+
+### 19. 初始 TrapContext 里有什么？
+
+用户程序入口地址、用户栈指针、返回到 U-mode 所需的 `sstatus`，以及初始寄存器值。
+
+### 20. 为什么说这是“骗系统”？
+
+口语上像骗，因为任务没有真实历史现场；但本质是构造一个合法的初始现场，复用恢复路径。
+
+### 21. app0 调用 yield 后第一件事是什么？
+
+用户库把 syscall id 放到 `a7`，执行 `ecall`，CPU 切到 S-mode。
+
+### 22. app0 的 TrapContext 什么时候保存？
+
+进入 Trap 入口时保存。也就是执行 `ecall` 后、进入内核处理 syscall 前。
+
+### 23. app0 的 TaskContext 什么时候保存？
+
+调度器决定切到 app1，并调用 `__switch` 时保存。
+
+### 24. app1 的 TaskContext 什么时候恢复？
+
+同一次 `__switch` 中，在保存 app0 之后，从 app1 的 TaskContext 读取寄存器恢复。
+
+### 25. 如果 app1 是第一次运行，恢复出来的是什么？
+
+恢复出伪造的 `ra=__restore` 和指向初始 TrapContext 的栈位置。
+
+### 26. 如果 app1 不是第一次运行呢？
+
+恢复出 app1 上次被切走时保存的内核现场，然后继续走回用户态的恢复流程。
+
+### 27. app1 后来怎么回到 app0？
+
+app1 也会 yield 或被 timer 打断，然后 `__switch(app1, app0)` 恢复 app0 的 TaskContext。
+
+### 28. app0 为什么不是从头开始？
+
+因为 app0 的 TrapContext 保存了用户态 PC 和寄存器，TaskContext 保存了内核切换路径。
+
+### 29. `sepc` 在 yield 中怎么变？
+
+内核处理完 yield syscall 后要把 `sepc += 4`，否则 app0 以后恢复时会再次执行同一个 `ecall`。
+
+### 30. `sstatus` 在恢复用户态中起什么作用？
+
+`sret` 根据 `sstatus` 判断返回后的特权级。初始上下文必须设置成返回 U-mode。
+
+### 31. `scause` 在 ch3 中有什么新作用？
+
+除了识别 syscall，还要识别 timer interrupt、非法指令、访存异常等。
+
+### 32. `stvec` 在 ch3 中有什么作用？
+
+所有 Trap 都会跳到 `stvec` 指向的入口，这是内核接管用户程序的入口门牌号。
+
+### 33. `syscall/fs.rs` 和 `syscall/process.rs` 为什么要拆？
+
+这是为了语义清晰：文件/终端 IO 放 fs，任务生命周期控制放 process。组件化版本用 trait 替代了这种文件拆分。
+
+### 34. trace 为什么要统计在 TCB 里？
+
+因为 trace 统计的是“当前任务”的 syscall 历史。放全局会把所有任务混在一起。
+
+### 35. ch3 最终比 ch2 多学到什么？
+
+ch2 学会用户态和内核态往返；ch3 学会保存多个任务现场，让任务可切换、可暂停、可恢复。
+
+## 16. 我对 ch3 的误区修正
+
+1. 我一开始说“用户程序塞到内核级里”，更准确说法是：用户程序的二进制被嵌入内核镜像，但运行时仍然进入 U-mode。
+2. 我一开始把多任务理解成同时运行，更准确是单核并发、快速切换。
+3. 我容易把 TrapContext 和 TaskContext 都叫上下文，但它们解决的切换层次不同。
+4. 我容易把第一次进入任务想成“直接跳 main”，实际上是伪造上下文后走 `__restore/sret`。
+5. 我容易忽略 `TaskManager`，但没有它就无法管理所有任务状态。
+6. 我容易把 `yield` 理解成退出，实际上它只是让出 CPU。
+7. 我容易把 timer 理解成普通时间查询，其实 timer interrupt 是调度器强制切换的来源。
+8. 我容易只看当前组件化文件，忘记 Guide 中 `loader/task/trap/syscall` 分层是理解逻辑用的地图。
+
+## 17. 给自己讲 ch3 的推荐顺序
+
+1. 先回顾 ch2 的限制：一个 app 不退出，后面的 app 没机会。
+2. 引入 TCB：每个 app 都要有自己的任务档案。
+3. 引入 TaskManager：内核要管理所有任务，而不是只管理当前 app。
+4. 解释 TrapContext：用户态被打断时保存现场。
+5. 解释 TaskContext：内核态切换任务时保存现场。
+6. 用第一次运行解释伪造上下文。
+7. 用 app0 yield 到 app1 解释 `__switch`。
+8. 用 app1 yield 回 app0 解释为什么能恢复。
+9. 用 timer interrupt 解释为什么可以强制分时。
+10. 用 trace 作业解释为什么 syscall 统计要放在 TCB。

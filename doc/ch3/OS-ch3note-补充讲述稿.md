@@ -276,3 +276,78 @@ VirtIO-keyboard -> keyboard.rs -> read(STDIN)
 10. `__restore` 从 TrapContext 回到用户态。
 11. syscall 会经过 fs/process 等语义分发。
 12. trace 作业让我们把 syscall 计数放进 TCB。
+
+## 16. 进一步细化：我会怎样把 ch3 讲给别人听
+
+ch3 这章最难的地方，是它把“用户态和内核态切换”与“任务和任务切换”叠在了一起。为了讲清楚，我会拆成下面 35 个小步骤。
+
+1. ch2 的批处理系统一次只运行一个程序。
+2. 如果当前程序一直不 `exit`，后面的程序永远不能运行。
+3. ch3 要解决这个问题：让多个程序轮流占用 CPU。
+4. 单核上它不是真并行，而是并发。
+5. 并发的本质是保存现场、切到别人、以后再恢复回来。
+6. 内核首先要把每个 app 都包装成一个任务。
+7. 每个任务都有一个 TCB，保存该任务的档案。
+8. TCB 里有上下文、栈、是否结束等字段。
+9. 组件化实验里还加入了 `syscall_count`，用于 trace 作业。
+10. 多个 TCB 组成任务表。
+11. 管理任务表和当前下标的逻辑就是 TaskManager。
+12. TaskManager 要知道谁 Ready、谁 Running、谁已经 Exited。
+13. 当前组件化版本不一定有独立 `TaskManager` 文件，但调度循环承担了这个角色。
+14. 每个任务需要自己的用户栈。
+15. 如果共用栈，app0 的局部变量可能被 app1 覆盖。
+16. 第一次进入任务时，任务没有历史现场。
+17. 内核提前构造初始 TrapContext。
+18. 初始 TrapContext 里放用户入口、用户栈和返回 U-mode 的状态。
+19. 内核还构造初始 TaskContext。
+20. 初始 TaskContext 的 `ra` 指向 `__restore`。
+21. 这样第一次 `__switch` 到该任务时，`ret` 会跳进 `__restore`。
+22. `__restore` 从初始 TrapContext 恢复寄存器。
+23. 最后 `sret` 进入用户态 app。
+24. app 运行一段时间后可以主动 `yield`。
+25. `yield` 通过 `ecall` 进入内核。
+26. Trap 入口保存用户现场，这就是 TrapContext。
+27. 内核根据 `a7` 判断 syscall id 是 `SCHED_YIELD`。
+28. 内核把 `sepc += 4`，防止返回后重复 ecall。
+29. 调度器决定切到下一个任务。
+30. `__switch` 保存当前任务的 TaskContext。
+31. `__switch` 恢复下一个任务的 TaskContext。
+32. 如果下一个任务第一次运行，就走伪造的 `ra -> __restore`。
+33. 如果下一个任务运行过，就回到它上次切走的位置。
+34. timer interrupt 和 yield 类似，只不过不是用户主动让，而是内核强制抢。
+35. 于是多个 app 就能交替推进，每个都能从上次暂停处继续。
+
+## 17. ch3 最重要的两个上下文比喻
+
+TrapContext 像“学生做题时桌面上所有草稿的快照”。老师突然叫停，学生离开座位，桌面状态要拍下来。回来时按快照恢复，才能继续做原来的题。
+
+TaskContext 像“教室值班老师换班时交接的最小信息”。它不保存学生所有草稿，只保存老师自己回到工作流程所需的关键信息，比如从哪个流程继续。
+
+所以：
+
+```text
+TrapContext 更靠近用户程序。
+TaskContext 更靠近内核调度器。
+```
+
+## 18. ch3 中 syscall 的讲述顺序
+
+以 `write/yield/exit/trace` 为例：
+
+1. `write` 是 IO 类 syscall，对应 Guide 的 `fs.rs`。
+2. `yield` 是调度类 syscall，对应 Guide 的 `process.rs`。
+3. `exit` 是生命周期类 syscall，也对应 `process.rs`。
+4. `trace` 是本课程练习扩展，用来观察当前任务的 syscall 历史。
+5. 用户态永远只是发请求。
+6. 内核态才真正决定打印、切换、结束或查询。
+
+组件化版本中：
+
+```text
+tg_syscall::handle
+  -> 按 syscall id 分发
+  -> main.rs 中不同 trait 实现具体功能
+  -> task.rs 把结果转换成 SchedulingEvent
+```
+
+这能解释为什么我们做 ch3 trace 时要改 `task.rs`：因为 syscall 计数属于“当前任务状态”，应该放进 TCB。
