@@ -62,6 +62,19 @@ impl Inode {
         None
     }
 
+    /// Return this inode number.
+    pub fn inode_id(&self) -> u32 {
+        self.fs
+            .lock()
+            .get_disk_inode_id(self.block_id, self.block_offset)
+    }
+
+    /// Return `(inode_id, is_dir, nlink)` for fstat.
+    pub fn stat(&self) -> (u32, bool, u32) {
+        let inode_id = self.inode_id();
+        self.read_disk_inode(|disk_inode| (inode_id, disk_inode.is_dir(), disk_inode.nlink()))
+    }
+
     /// Find inode under current inode by name
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
         // 目录查找流程：目录 inode -> 遍历 dirent -> 定位子 inode 的磁盘位置。
@@ -137,6 +150,93 @@ impl Inode {
             self.block_device.clone(),
         )))
         // release efs lock automatically by compiler
+    }
+
+    /// Create another directory entry pointing to the same inode.
+    pub fn link(&self, src: &str, dst: &str) -> isize {
+        if src == dst || self.find(dst).is_some() {
+            return -1;
+        }
+        let Some(src_inode) = self.find(src) else {
+            return -1;
+        };
+        let src_inode_id = src_inode.inode_id();
+        let mut fs = self.fs.lock();
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            let dirent = DirEntry::new(dst, src_inode_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        src_inode.modify_disk_inode(|disk_inode| disk_inode.inc_nlink());
+        block_cache_sync_all();
+        0
+    }
+
+    /// Remove one directory entry and release inode/data when the last link is gone.
+    pub fn unlink(&self, name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        let mut target_inode_id = None;
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            let mut remove_index = None;
+            for i in 0..file_count {
+                assert_eq!(
+                    root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    remove_index = Some(i);
+                    target_inode_id = Some(dirent.inode_number());
+                    break;
+                }
+            }
+            if let Some(index) = remove_index {
+                if index + 1 != file_count {
+                    let mut last = DirEntry::empty();
+                    assert_eq!(
+                        root_inode.read_at(
+                            (file_count - 1) * DIRENT_SZ,
+                            last.as_bytes_mut(),
+                            &self.block_device,
+                        ),
+                        DIRENT_SZ,
+                    );
+                    root_inode.write_at(index * DIRENT_SZ, last.as_bytes(), &self.block_device);
+                }
+                root_inode.size -= DIRENT_SZ as u32;
+            }
+        });
+
+        let Some(inode_id) = target_inode_id else {
+            return -1;
+        };
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        let mut release_inode = false;
+        get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(block_offset, |disk_inode: &mut DiskInode| {
+                release_inode = disk_inode.dec_nlink() == 0;
+                if release_inode {
+                    let size = disk_inode.size;
+                    let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
+                    assert!(data_blocks_dealloc.len() == DiskInode::total_blocks(size) as usize);
+                    for data_block in data_blocks_dealloc.into_iter() {
+                        fs.dealloc_data(data_block);
+                    }
+                }
+            });
+        if release_inode {
+            fs.dealloc_inode(inode_id);
+        }
+        block_cache_sync_all();
+        0
     }
 
     /// List inodes by id under current inode

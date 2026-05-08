@@ -32,10 +32,13 @@ ensure_tg_checker
 # 使用 pipefail 确保管道中任意命令失败都能被捕获
 set -o pipefail
 
+HEADLESS_RUNNER="qemu-system-riscv64 -machine virt -nographic -bios none -drive file=target/riscv64gc-unknown-none-elf/debug/fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -kernel"
+
 run_base() {
     echo "运行 ch6 基础测试..."
     cargo clean
     export CHAPTER=-6
+    export CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER="$HEADLESS_RUNNER"
     echo -e "${YELLOW}────────── cargo run 输出 ──────────${NC}"
 
     # 使用 tee 将 cargo run 的输出同时显示在终端和传递给 tg-rcore-tutorial-checker
@@ -58,6 +61,7 @@ run_exercise() {
     echo "运行 ch6 练习测试..."
     cargo clean
     export CHAPTER=6
+    export CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER="$HEADLESS_RUNNER"
     echo -e "${YELLOW}────────── cargo run --features exercise 输出 ──────────${NC}"
 
     if cargo run --features exercise 2>&1 | tee /dev/stderr | tg-rcore-tutorial-checker --ch 6 --exercise; then

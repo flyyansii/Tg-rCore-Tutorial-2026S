@@ -85,6 +85,7 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
+    nlink: u32,
     type_: DiskInodeType,
 }
 
@@ -96,6 +97,7 @@ impl DiskInode {
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
+        self.nlink = 1;
         self.type_ = type_;
     }
     /// Whether this inode is a directory
@@ -106,6 +108,21 @@ impl DiskInode {
     #[allow(unused)]
     pub fn is_file(&self) -> bool {
         self.type_ == DiskInodeType::File
+    }
+    /// Return hard link count.
+    pub fn nlink(&self) -> u32 {
+        self.nlink
+    }
+    /// Increase hard link count by one.
+    pub fn inc_nlink(&mut self) {
+        self.nlink += 1;
+    }
+    /// Decrease hard link count by one and return the new value.
+    pub fn dec_nlink(&mut self) -> u32 {
+        if self.nlink > 0 {
+            self.nlink -= 1;
+        }
+        self.nlink
     }
     /// Return block number correspond to size.
     pub fn data_blocks(&self) -> u32 {

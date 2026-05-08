@@ -13,6 +13,8 @@ use alloc::collections::{BTreeMap, VecDeque};
 use core::cell::UnsafeCell;
 use tg_task_manage::{Manage, PManager, ProcId, Schedule};
 
+const BIG_STRIDE: u128 = 1 << 60;
+
 /// 处理器全局管理器
 pub struct Processor {
     inner: UnsafeCell<PManager<Process, ProcManager>>,
@@ -81,6 +83,26 @@ impl Schedule<ProcId> for ProcManager {
     }
     /// 从就绪队列头部取出
     fn fetch(&mut self) -> Option<ProcId> {
-        self.ready_queue.pop_front()
+        let mut best_index = None;
+        let mut best_stride = u128::MAX;
+        let mut best_pid = usize::MAX;
+        for (index, pid) in self.ready_queue.iter().enumerate() {
+            if let Some(task) = self.tasks.get(pid) {
+                let pid_value = pid.get_usize();
+                if task.stride < best_stride || task.stride == best_stride && pid_value < best_pid {
+                    best_index = Some(index);
+                    best_stride = task.stride;
+                    best_pid = pid_value;
+                }
+            }
+        }
+        let index = best_index?;
+        let pid = self.ready_queue.remove(index)?;
+        if let Some(task) = self.tasks.get_mut(&pid) {
+            task.stride = task
+                .stride
+                .saturating_add(BIG_STRIDE / task.priority.max(1) as u128);
+        }
+        Some(pid)
     }
 }

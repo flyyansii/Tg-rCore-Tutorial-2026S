@@ -15,6 +15,7 @@ extern "C" fn main() -> i32 {
         let target = match option_env!("CHAPTER").unwrap_or("0") {
             "5" => "ch5_usertest",
             "6" => "ch6_usertest",
+            "breakout" => "ch6_breakout",
             "8" => "ch8_usertest",
             "-5" => "ch5b_usertest",
             "-6" => "ch6b_usertest",

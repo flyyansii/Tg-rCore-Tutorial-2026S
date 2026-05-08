@@ -74,6 +74,7 @@ cases = [
 
 [ch6]
 cases = [
+    "ch6_breakout",
     "00hello_world",
     "01store_fault",
     "02power",
