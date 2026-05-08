@@ -7,7 +7,7 @@ use virtio_drivers::{Hal, MmioTransport, VirtIOGpu, VirtIOHeader};
 
 const VIRTIO0: usize = 0x1000_1000;
 const PAGE_SIZE: usize = 4096;
-const DMA_PAGES: usize = 128;
+const DMA_PAGES: usize = 256;
 const PINGPONG_FRAME_MAGIC: u32 = 0x504F_4E47;
 
 /// File descriptor used by the user program to submit pingpong frames.

@@ -7,13 +7,14 @@ runner = [
     "-machine", "virt",
     "-display", "gtk",
     "-serial", "stdio",
-    "-device", "virtio-gpu-device,bus=virtio-mmio-bus.0,xres=800,yres=480",
+    "-device", "virtio-gpu-device,bus=virtio-mmio-bus.0,xres=640,yres=360",
     "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.1",
     "-bios", "none",
     "-kernel",
 ]
 
 [env]
+TG_USER_DIR = "C:\\Users\\FLY\\Desktop\\OS\\Tg-rCore-Tutorial-2026S-git\\tg-rcore-tutorial-user"
 TG_USER_CRATE = "tg-rcore-tutorial-user"
 TG_USER_LOCAL_DIR = "tg-rcore-tutorial-user"
 TG_USER_VERSION = "0.4.10"

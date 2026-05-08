@@ -91,7 +91,7 @@ fn ensure_keyboard() -> Option<&'static mut VirtIOInput<VirtioHal, MmioTransport
                 MmioTransport::new(NonNull::new(VIRTIO_KEYBOARD as *mut VirtIOHeader).unwrap())
                     .ok()?;
             KEYBOARD = Some(VirtIOInput::<VirtioHal, MmioTransport>::new(transport).ok()?);
-            log("[ch4-tetris] virtio-keyboard ready");
+            log("[ch5-pingpong] virtio-keyboard ready");
         }
         KEYBOARD.as_mut()
     }
