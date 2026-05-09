@@ -48,6 +48,10 @@
 
 /// 文件系统模块：easy-fs 封装 + 统一的 Fd 枚举
 mod fs;
+/// VirtIO-GPU renderer for the ch7 pacman demo.
+mod graphics;
+/// VirtIO-keyboard polling for the ch7 pacman demo.
+mod keyboard;
 /// 进程模块：Process 结构体（含 fd_table 和 signal）
 mod process;
 /// 处理器模块：PROCESSOR 全局管理器
@@ -161,7 +165,7 @@ impl KernelSpace {
 static KERNEL_SPACE: KernelSpace = KernelSpace::new();
 
 /// VirtIO MMIO 设备地址范围
-pub const MMIO: &[(usize, usize)] = &[(0x1000_1000, 0x00_1000)];
+pub const MMIO: &[(usize, usize)] = &[(0x1000_1000, 0x00_3000)];
 
 /// 内核主函数——系统初始化和启动入口
 ///
@@ -469,7 +473,9 @@ mod impls {
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             let current = PROCESSOR.get_mut().current().unwrap();
             if let Some(ptr) = current.address_space.translate(VAddr::new(buf), READABLE) {
-                if fd == STDOUT || fd == STDDEBUG {
+                if fd == crate::graphics::GRAPHICS_FD {
+                    return crate::graphics::submit_pacman_frame(ptr.as_ptr() as usize, count);
+                } else if fd == STDOUT || fd == STDDEBUG {
                     // 标准输出：直接打印到控制台
                     print!("{}", unsafe {
                         core::str::from_utf8_unchecked(core::slice::from_raw_parts(
@@ -478,7 +484,11 @@ mod impls {
                         ))
                     });
                     count as _
-                } else if let Some(file) = &current.fd_table[fd] {
+                } else if fd < current.fd_table.len() {
+                    let Some(file) = &current.fd_table[fd] else {
+                        log::error!("closed fd: {fd}");
+                        return -1;
+                    };
                     // 普通文件或管道：通过 Fd 统一接口写入
                     let file = file.lock();
                     if file.writable() {
@@ -505,15 +515,16 @@ mod impls {
             if let Some(ptr) = current.address_space.translate(VAddr::new(buf), WRITEABLE) {
                 if fd == STDIN {
                     // 标准输入：通过 SBI 逐字符读取
-                    let mut ptr = ptr.as_ptr();
-                    for _ in 0..count {
-                        unsafe {
-                            *ptr = tg_sbi::console_getchar() as u8;
-                            ptr = ptr.add(1);
-                        }
+                    if let Some(key) = crate::keyboard::take() {
+                        unsafe { *ptr.as_ptr() = key };
+                        return 1;
                     }
-                    count as _
-                } else if let Some(file) = &current.fd_table[fd] {
+                    -2
+                } else if fd < current.fd_table.len() {
+                    let Some(file) = &current.fd_table[fd] else {
+                        log::error!("closed fd: {fd}");
+                        return -1;
+                    };
                     // 普通文件或管道：通过 Fd 统一接口读取
                     let file = file.lock();
                     if file.readable() {

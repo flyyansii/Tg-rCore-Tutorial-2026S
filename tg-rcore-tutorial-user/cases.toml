@@ -102,6 +102,7 @@ cases = [
 
 [ch7]
 cases = [
+    "ch7_pacman",
     "00hello_world",
     "01store_fault",
     "02power",
