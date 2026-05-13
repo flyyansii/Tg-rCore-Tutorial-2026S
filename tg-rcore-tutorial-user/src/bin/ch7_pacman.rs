@@ -11,6 +11,7 @@ const MAP_H: usize = 15;
 const MAP_SIZE: usize = MAP_W * MAP_H;
 const GRAPHICS_FD: usize = 3;
 const PACMAN_FRAME_MAGIC: u32 = 0x5041_434D;
+const SCRIPTED_DEMO: bool = true;
 
 const RAW_MAP: [&[u8; MAP_W]; MAP_H] = [
     b"###################",
@@ -128,6 +129,11 @@ impl Game {
         false
     }
 
+    fn scripted_key(step: u32) -> u8 {
+        const SCRIPT: &[u8] = b"ddddddddwwwwaaaassssddddwwwwaaaassssddddwwwwaaaassss";
+        SCRIPT[(step as usize) % SCRIPT.len()]
+    }
+
     fn move_pacman(&mut self) {
         let nx = self.pac.x as isize + self.dir.0;
         let ny = self.pac.y as isize + self.dir.1;
@@ -227,19 +233,31 @@ impl Game {
 
 #[unsafe(no_mangle)]
 extern "C" fn main() -> i32 {
-    println!("ch7 pacman: WASD/arrows move, Q quits");
+    println!("ch7 pacman demo: scripted route, auto exit");
     let mut game = Game::new();
+    let mut steps = 0u32;
     loop {
-        if let Some(key) = try_getchar() {
+        // Draw before polling input so the first frame appears even when no key has arrived yet.
+        game.submit();
+        if SCRIPTED_DEMO {
+            game.apply_key(Game::scripted_key(steps));
+        } else if let Some(key) = try_getchar() {
             if game.apply_key(key) {
                 break;
             }
         }
         game.tick();
-        game.submit();
         if game.game_over || game.win {
+            game.submit();
+            println!("Test ch7 pacman OK!");
             sleep(800);
             break;
+        }
+        steps += 1;
+        if steps >= 160 {
+            game.submit();
+            println!("Test ch7 pacman OK!");
+            return 0;
         }
         sleep(80);
         sched_yield();

@@ -17,6 +17,7 @@ const BALL_SIZE: i32 = 12;
 const GRAPHICS_FD: usize = 3;
 const BREAKOUT_FRAME_MAGIC: u32 = 0x4252_4B54;
 const SAVE_FILE: &str = "breakout.sav\0";
+const SCRIPTED_DEMO: bool = true;
 
 #[repr(C)]
 struct BreakoutFrame {
@@ -200,6 +201,25 @@ impl Game {
         false
     }
 
+    fn scripted_step(&mut self, frame: u32) {
+        if self.game_over {
+            self.handle_key(b' ');
+            return;
+        }
+        if frame == 30 {
+            self.save();
+        } else if frame == 90 {
+            self.load();
+        }
+        let paddle_center = self.paddle_x + PADDLE_W / 2;
+        let ball_center = self.ball_x + BALL_SIZE / 2;
+        if ball_center + 10 < paddle_center {
+            self.handle_key(b'a');
+        } else if ball_center > paddle_center + 10 {
+            self.handle_key(b'd');
+        }
+    }
+
     fn tick(&mut self) {
         if self.saved_ticks > 0 {
             self.saved_ticks -= 1;
@@ -283,21 +303,34 @@ impl Game {
 extern "C" fn main() -> i32 {
     let mut game = Game::new();
     let mut last_tick = get_time();
-    println!("ch6 breakout: A/D move, S save, R restore, Space restart, Q quit");
+    let mut frames = 0u32;
+    println!("ch6 breakout demo: scripted paddle, save/load, auto exit");
     game.submit();
     loop {
-        while let Some(key) = try_getchar() {
-            if game.handle_key(key) {
-                game.submit();
-                println!("Test ch6 breakout OK!");
-                return 0;
+        let mut handled_input = false;
+        if !SCRIPTED_DEMO {
+            while let Some(key) = try_getchar() {
+                handled_input = true;
+                if game.handle_key(key) {
+                    game.submit();
+                    println!("Test ch6 breakout OK!");
+                    return 0;
+                }
             }
         }
         let now = get_time();
         if now - last_tick >= 24 {
             last_tick = now;
+            if !handled_input {
+                game.scripted_step(frames);
+            }
             game.tick();
             game.submit();
+            frames += 1;
+            if frames >= 220 {
+                println!("Test ch6 breakout OK!");
+                return 0;
+            }
         }
         sleep(4);
         sched_yield();

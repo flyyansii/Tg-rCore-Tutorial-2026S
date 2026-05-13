@@ -191,6 +191,9 @@ extern "C" fn rust_main() -> ! {
     assert!(portal_layout.size() < 1 << Sv39::PAGE_BITS);
     // 步骤 5：建立内核地址空间并激活 Sv39 分页（包含 MMIO 映射）
     kernel_space(layout, MEMORY, portal_ptr as _);
+    if option_env!("CHAPTER") == Some("breakout") {
+        graphics::run_scripted_demo();
+    }
     // 步骤 6：初始化异界传送门
     let portal = unsafe { MultislotPortal::init_transit(PROTAL_TRANSIT.base().val(), 1) };
     // 步骤 7：初始化系统调用处理器
@@ -500,20 +503,15 @@ mod impls {
         /// - 其他 fd：通过文件描述符表查找文件句柄，写入文件
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             let current = PROCESSOR.get_mut().current().unwrap();
-            if fd == crate::graphics::GRAPHICS_FD {
-                if let Some(ptr) = current
-                    .address_space
-                    .translate::<u8>(VAddr::new(buf), READABLE)
-                {
-                    return crate::graphics::submit_breakout_frame(ptr.as_ptr() as usize, count);
-                }
-                log::error!("graphics frame ptr not readable");
-                return -1;
-            }
             if let Some(ptr) = current
                 .address_space
                 .translate::<u8>(VAddr::new(buf), READABLE)
             {
+                if fd == crate::graphics::GRAPHICS_FD
+                    && crate::graphics::looks_like_breakout_frame(ptr.as_ptr() as usize, count)
+                {
+                    return crate::graphics::submit_breakout_frame(ptr.as_ptr() as usize, count);
+                }
                 if fd == STDOUT || fd == STDDEBUG {
                     // 标准输出：直接打印到控制台
                     print!("{}", unsafe {

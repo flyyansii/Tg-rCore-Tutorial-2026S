@@ -19,19 +19,28 @@ use tg_kernel_vm::page_table::{MmuMeta, VAddr, VmFlags};
 use virtio_drivers::{Hal, MmioTransport, VirtIOBlk, VirtIOHeader};
 
 /// VirtIO MMIO 基地址
-const VIRTIO0: usize = 0x10001000;
+const VIRTIO_MMIO: &[usize] = &[0x1000_2000, 0x1000_1000, 0x1000_3000];
+const VIRTIO_DEVICE_ID_OFFSET: usize = 0x008;
+const VIRTIO_BLOCK_DEVICE_ID: u32 = 2;
 
 /// 全局块设备实例
 pub static BLOCK_DEVICE: Lazy<Arc<dyn BlockDevice>> = Lazy::new(|| {
-    Arc::new(unsafe {
-        VirtIOBlock(Mutex::new(
-            VirtIOBlk::new(
-                MmioTransport::new(NonNull::new(VIRTIO0 as *mut VirtIOHeader).unwrap())
-                    .expect("Error when creating MmioTransport"),
-            )
-            .expect("Error when creating VirtIOBlk"),
-        ))
-    })
+    for base in VIRTIO_MMIO {
+        let device_id = unsafe { ((*base + VIRTIO_DEVICE_ID_OFFSET) as *const u32).read_volatile() };
+        if device_id != VIRTIO_BLOCK_DEVICE_ID {
+            continue;
+        }
+        let Some(header) = NonNull::new(*base as *mut VirtIOHeader) else {
+            continue;
+        };
+        let Ok(transport) = (unsafe { MmioTransport::new(header) }) else {
+            continue;
+        };
+        if let Ok(block) = VirtIOBlk::new(transport) {
+            return Arc::new(VirtIOBlock(Mutex::new(block)));
+        }
+    }
+    panic!("Error when creating VirtIOBlk");
 });
 
 /// VirtIO 块设备封装

@@ -363,4 +363,20 @@ ch7 的核心不是“多了一个 pipe 函数”，而是 fd 抽象进一步统
 ```
 
 这就是 Unix 风格 I/O 的力量。
+## GTK QEMU 图形 Demo 补充记录
 
+本章在管道、重定向、参数传递和信号机制的学习基础上，额外做了一个 `ch7-pacman` 图形展示路径。默认 `cargo run` 会打开 QEMU GTK 窗口，由内核侧的固定脚本驱动 Pacman 和幽灵移动，并把每一帧写入 VirtIO-GPU framebuffer。
+
+演示图如下：
+
+![ch7-pacman-demo](../assets/ch7-pacman-demo.gif)
+
+这条 demo 路径和原教程测试路径保持隔离：`cargo run` 默认用于图形展示；`test.sh base` 会设置 `CHAPTER=-7` 并使用 headless runner，因此仍然执行原来的 ch7 基础测试，不依赖 GTK 窗口。
+
+这次调试里最容易混淆的地方是：Pacman demo 看起来像“应用程序画图”，但为了稳定展示和录制，我采用的是内核固定脚本图形路径。它仍然能体现本章之后内核拥有的设备抽象能力：QEMU 提供 VirtIO-GPU，内核通过 MMIO 初始化设备，绘制 framebuffer，再 flush 到 GTK 窗口。对应验证日志为：
+
+```text
+[ch7-pacman] virtio-gpu ready
+[ch7-pacman] first frame visible
+[ch7-pacman] Test ch7 pacman OK!
+```

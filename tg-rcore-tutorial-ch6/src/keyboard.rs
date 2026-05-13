@@ -110,6 +110,10 @@ fn refresh() {
 
 /// Take one translated key from the keyboard event queue.
 pub fn take() -> Option<u8> {
+    match tg_sbi::console_getchar() {
+        usize::MAX | 0 => {}
+        value => return Some(value as u8),
+    }
     refresh();
     let val = LAST_KEY.swap(0, Ordering::Relaxed);
     if val == 0 {

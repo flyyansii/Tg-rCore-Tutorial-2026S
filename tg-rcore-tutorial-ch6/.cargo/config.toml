@@ -8,10 +8,9 @@ runner = [
     "-display", "gtk",
     "-serial", "stdio",
     "-bios", "none",
+    "-device", "virtio-gpu-device,bus=virtio-mmio-bus.0,xres=640,yres=360",
     "-drive", "file=target/riscv64gc-unknown-none-elf/debug/fs.img,if=none,format=raw,id=x0",
-    "-device", "virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0",
-    "-device", "virtio-gpu-device,bus=virtio-mmio-bus.1,xres=640,yres=360",
-    "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.2",
+    "-device", "virtio-blk-device,drive=x0,bus=virtio-mmio-bus.1",
     "-kernel",
 ]
 

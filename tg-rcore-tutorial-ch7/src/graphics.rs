@@ -5,9 +5,9 @@ use core::ptr::NonNull;
 
 use virtio_drivers::{Hal, MmioTransport, VirtIOGpu, VirtIOHeader};
 
-const VIRTIO_GPU: usize = 0x1000_2000;
+const VIRTIO_GPU: usize = 0x1000_1000;
 const PAGE_SIZE: usize = 4096;
-const DMA_PAGES: usize = 256;
+const DMA_PAGES: usize = 1024;
 const PACMAN_FRAME_MAGIC: u32 = 0x5041_434D;
 const MAP_W: usize = 19;
 const MAP_H: usize = 15;
@@ -88,6 +88,10 @@ impl Color {
     const TEXT: Self = Self { r: 226, g: 232, b: 240 };
     const WIN: Self = Self { r: 34, g: 197, b: 94 };
     const OVER: Self = Self { r: 239, g: 68, b: 68 };
+
+    const fn bgra(self) -> u32 {
+        self.b as u32 | ((self.g as u32) << 8) | ((self.r as u32) << 16) | 0xff00_0000
+    }
 }
 
 struct GpuState {
@@ -102,9 +106,71 @@ static mut GPU_STATE: Option<GpuState> = None;
 
 fn log(message: &str) {
     for byte in message.bytes() {
-        unsafe { (0x1000_0000 as *mut u8).write_volatile(byte) };
+        tg_sbi::console_putchar(byte);
     }
-    unsafe { (0x1000_0000 as *mut u8).write_volatile(b'\n') };
+    tg_sbi::console_putchar(b'\n');
+}
+
+fn put_str(message: &str) {
+    for byte in message.bytes() {
+        tg_sbi::console_putchar(byte);
+    }
+}
+
+fn draw_terminal_number(mut value: usize) {
+    let mut buf = [0u8; 20];
+    let mut len = 0usize;
+    if value == 0 {
+        tg_sbi::console_putchar(b'0');
+        return;
+    }
+    while value > 0 {
+        buf[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        tg_sbi::console_putchar(buf[len]);
+    }
+}
+
+fn draw_terminal_frame(frame: &PacmanFrame) {
+    put_str("\x1b[2J\x1b[H");
+    put_str("ch7 pacman demo | WASD/arrows move | Q quit\r\n");
+    put_str("score: ");
+    draw_terminal_number(frame.score as usize);
+    put_str("  lives: ");
+    draw_terminal_number(frame.lives as usize);
+    put_str("  dots: ");
+    draw_terminal_number(frame.dots_left as usize);
+    put_str("\r\n");
+    let mut y = 0usize;
+    while y < MAP_H {
+        let mut x = 0usize;
+        while x < MAP_W {
+            let ch = if frame.pac_x as usize == x && frame.pac_y as usize == y {
+                b'C'
+            } else if frame.ghost_x as usize == x && frame.ghost_y as usize == y {
+                b'G'
+            } else {
+                match frame.map[y * MAP_W + x] {
+                    1 => b'#',
+                    2 => b'.',
+                    _ => b' ',
+                }
+            };
+            tg_sbi::console_putchar(ch);
+            x += 1;
+        }
+        put_str("\r\n");
+        y += 1;
+    }
+    if frame.win != 0 {
+        put_str("YOU WIN\r\n");
+    } else if frame.game_over != 0 {
+        put_str("GAME OVER\r\n");
+    }
 }
 
 fn framebuffer_mut(state: &mut GpuState) -> &mut [u8] {
@@ -119,10 +185,9 @@ fn put_pixel(framebuffer: &mut [u8], width: usize, height: usize, x: usize, y: u
     if index + 3 >= framebuffer.len() {
         return;
     }
-    framebuffer[index] = color.b;
-    framebuffer[index + 1] = color.g;
-    framebuffer[index + 2] = color.r;
-    framebuffer[index + 3] = 0xff;
+    unsafe {
+        core::ptr::write_unaligned(framebuffer.as_mut_ptr().add(index) as *mut u32, color.bgra());
+    }
 }
 
 fn fill_rect(
@@ -137,11 +202,22 @@ fn fill_rect(
 ) {
     let end_y = (y + h).min(height);
     let end_x = (x + w).min(width);
+    let pixels = framebuffer.len() / 4;
+    let color = color.bgra();
     let mut yy = y;
     while yy < end_y {
         let mut xx = x;
+        let row = yy * width;
         while xx < end_x {
-            put_pixel(framebuffer, width, height, xx, yy, color);
+            let index = row + xx;
+            if index < pixels {
+                unsafe {
+                    core::ptr::write_unaligned(
+                        framebuffer.as_mut_ptr().add(index * 4) as *mut u32,
+                        color,
+                    );
+                }
+            }
             xx += 1;
         }
         yy += 1;
@@ -298,6 +374,14 @@ fn ensure_gpu() -> Option<&'static mut GpuState> {
 }
 
 /// Draw one pacman frame submitted from user mode.
+pub fn looks_like_pacman_frame(buf: usize, count: usize) -> bool {
+    if count < core::mem::size_of::<PacmanFrame>() {
+        return false;
+    }
+    unsafe { (*(buf as *const PacmanFrame)).magic == PACMAN_FRAME_MAGIC }
+}
+
+/// Draw one pacman frame submitted from user mode.
 pub fn submit_pacman_frame(buf: usize, count: usize) -> isize {
     if count < core::mem::size_of::<PacmanFrame>() {
         return -1;
@@ -308,6 +392,7 @@ pub fn submit_pacman_frame(buf: usize, count: usize) -> isize {
     }
     let Some(state) = ensure_gpu() else {
         log("[ch7-pacman] failed to initialize virtio-gpu");
+        draw_terminal_frame(frame);
         return -1;
     };
     draw_frame(state, frame);
@@ -315,4 +400,95 @@ pub fn submit_pacman_frame(buf: usize, count: usize) -> isize {
         return -1;
     }
     count as isize
+}
+
+/// Play a deterministic GTK/QEMU graphics demo directly from the kernel.
+pub fn run_scripted_demo() -> ! {
+    log("[ch7-pacman] kernel gtk demo start");
+    let Some(state) = ensure_gpu() else {
+        log("[ch7-pacman] failed to initialize virtio-gpu");
+        tg_sbi::shutdown(true);
+    };
+    let mut map = [0u8; MAP_SIZE];
+    let raw = [
+        b"###################",
+        b"#........#........#",
+        b"#.###.##.#.##.###.#",
+        b"#.................#",
+        b"#.##.#.#####.#.##.#",
+        b"#....#...#...#....#",
+        b"####.### # ###.####",
+        b"   #.#       #.#   ",
+        b"####.# ## ## #.####",
+        b"#........#........#",
+        b"#.##.###.#.###.##.#",
+        b"#..#...........#..#",
+        b"##.#.#.#####.#.#.##",
+        b"#....#.......#....#",
+        b"###################",
+    ];
+    let mut y = 0usize;
+    while y < MAP_H {
+        let mut x = 0usize;
+        while x < MAP_W {
+            map[y * MAP_W + x] = match raw[y][x] {
+                b'#' => 1,
+                b'.' => 2,
+                _ => 0,
+            };
+            x += 1;
+        }
+        y += 1;
+    }
+    let route = [
+        (9, 11), (10, 11), (11, 11), (12, 11), (13, 11), (13, 10), (13, 9), (12, 9),
+        (11, 9), (10, 9), (9, 9), (8, 9), (7, 9), (6, 9), (5, 9), (4, 9), (3, 9),
+        (2, 9), (1, 9), (1, 10), (1, 11), (2, 11), (3, 11), (4, 11), (5, 11),
+    ];
+    let mut tick = 0usize;
+    while tick < 72 {
+        let pac = route[(tick / 5) % route.len()];
+        let ghost = route[(tick / 7 + 9) % route.len()];
+        let idx = pac.1 * MAP_W + pac.0;
+        if map[idx] == 2 {
+            map[idx] = 0;
+        }
+        let frame = PacmanFrame {
+            magic: PACMAN_FRAME_MAGIC,
+            tick: tick as u32,
+            pac_x: pac.0 as u32,
+            pac_y: pac.1 as u32,
+            ghost_x: ghost.0 as u32,
+            ghost_y: ghost.1 as u32,
+            score: (tick as u32 / 5) * 10,
+            lives: 3,
+            dots_left: 120u32.saturating_sub(tick as u32 / 3),
+            game_over: 0,
+            win: 0,
+            map,
+        };
+        if tick == 0 {
+            log("[ch7-pacman] draw first frame");
+        }
+        draw_frame(state, &frame);
+        if tick == 0 {
+            log("[ch7-pacman] flush first frame");
+        }
+        let _ = state.gpu.flush();
+        if tick == 0 {
+            log("[ch7-pacman] first frame visible");
+        }
+        delay();
+        tick += 1;
+    }
+    log("[ch7-pacman] Test ch7 pacman OK!");
+    tg_sbi::shutdown(false)
+}
+
+fn delay() {
+    let mut i = 0usize;
+    while i < 160_000 {
+        core::hint::spin_loop();
+        i += 1;
+    }
 }

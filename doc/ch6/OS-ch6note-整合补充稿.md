@@ -584,4 +584,20 @@ ch6 的核心不是“会写文件 API”，而是理解这条链：
 ```
 
 只要这条链通了，就能理解为什么文件系统是 OS 的核心抽象之一。
+## GTK QEMU 图形 Demo 补充记录
 
+本章在原有文件系统、块设备和 fd 抽象之外，额外做了一个 `ch6-breakout` 图形展示路径。为了避免 `cargo run` 时只看到终端字符画，我把默认运行方式调整为 QEMU GTK 窗口，并通过 VirtIO-GPU 直接把固定脚本帧渲染到 framebuffer。
+
+演示图如下：
+
+![ch6-breakout-demo](../assets/ch6-breakout-demo.gif)
+
+这条 demo 路径和基础测试路径是分开的：`cargo run` 默认展示 Breakout 图形 demo；`test.sh base` 和 `test.sh exercise` 会覆盖 `CHAPTER` 和 runner，继续走原教程的 headless 测试流程。因此它不会破坏 ch6 的文件系统测试。
+
+这次调试中最重要的结论是：图形展示不是普通 `println!`，而是内核通过 MMIO 发现 VirtIO-GPU，初始化 framebuffer，再把每一帧像素写入显存区域并 flush 给 QEMU 显示。最开始我误以为是 GPU 初始化失败，后来通过串口日志确认已经到了 `virtio-gpu ready`，真正的瓶颈是逐像素绘制太慢，于是改为按 4 字节 BGRA 批量写矩形，最终日志能稳定出现：
+
+```text
+[ch6-breakout] virtio-gpu ready
+[ch6-breakout] first frame visible
+[ch6-breakout] Test ch6 breakout OK!
+```

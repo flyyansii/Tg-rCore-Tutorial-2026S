@@ -45,23 +45,35 @@ use tg_easy_fs::BlockDevice;
 use tg_kernel_vm::page_table::{MmuMeta, VAddr, VmFlags};
 use virtio_drivers::{Hal, MmioTransport, VirtIOBlk, VirtIOHeader};
 
-/// VirtIO 块设备的 MMIO 基地址（QEMU virt 平台）
-const VIRTIO0: usize = 0x10001000;
+/// VirtIO MMIO candidate base addresses.
+///
+/// Headless tests attach the block device at bus.0 (`0x1000_1000`), while the
+/// GTK graphics demo reserves bus.0 for GPU and attaches block at bus.1.
+const VIRTIO_MMIO: &[usize] = &[0x1000_1000, 0x1000_2000, 0x1000_3000];
+const VIRTIO_DEVICE_ID_OFFSET: usize = 0x008;
+const VIRTIO_BLOCK_DEVICE_ID: u32 = 2;
 
 /// 全局块设备实例（延迟初始化）
 ///
 /// 通过 MMIO 地址创建 VirtIO 块设备驱动实例。
 /// 被 easy-fs 文件系统用于读写磁盘块。
 pub static BLOCK_DEVICE: Lazy<Arc<dyn BlockDevice>> = Lazy::new(|| {
-    Arc::new(unsafe {
-        VirtIOBlock(Mutex::new(
-            VirtIOBlk::new(
-                MmioTransport::new(NonNull::new(VIRTIO0 as *mut VirtIOHeader).unwrap())
-                    .expect("Error when creating MmioTransport"),
-            )
-            .expect("Error when creating VirtIOBlk"),
-        ))
-    })
+    for base in VIRTIO_MMIO {
+        let device_id = unsafe { ((*base + VIRTIO_DEVICE_ID_OFFSET) as *const u32).read_volatile() };
+        if device_id != VIRTIO_BLOCK_DEVICE_ID {
+            continue;
+        }
+        let Some(header) = NonNull::new(*base as *mut VirtIOHeader) else {
+            continue;
+        };
+        let Ok(transport) = (unsafe { MmioTransport::new(header) }) else {
+            continue;
+        };
+        if let Ok(block) = VirtIOBlk::new(transport) {
+            return Arc::new(VirtIOBlock(Mutex::new(block)));
+        }
+    }
+    panic!("Error when creating VirtIOBlk");
 });
 
 /// VirtIO 块设备封装
